@@ -6,13 +6,14 @@ import AnalysisPanel from './components/AnalysisPanel'
 import IntelPanel from './components/IntelPanel'
 
 export default function Home() {
-  const [alertText, setAlertText] = useState('')
-  const [result, setResult] = useState(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState(null)
-  const [activeId, setActiveId] = useState(null)
-  const [history, setHistory] = useState([])
+  const [alertText, setAlertText]       = useState('')
+  const [result, setResult]             = useState(null)
+  const [loading, setLoading]           = useState(false)
+  const [error, setError]               = useState(null)
+  const [activeId, setActiveId]         = useState(null)
+  const [history, setHistory]           = useState([])
   const [queueCollapsed, setQueueCollapsed] = useState(false)
+  const [intelCollapsed, setIntelCollapsed] = useState(false)
 
   async function handleTriage() {
     if (!alertText.trim()) return
@@ -47,10 +48,16 @@ export default function Home() {
     }
   }
 
+  const mainClass = [
+    'arb-main',
+    queueCollapsed ? 'arb-main-collapsed' : '',
+    intelCollapsed ? 'arb-main-intel-collapsed' : '',
+  ].filter(Boolean).join(' ')
+
   return (
     <div className="arb-layout">
       <Header activeId={activeId} result={result} />
-      <main className={`arb-main${queueCollapsed ? ' arb-main-collapsed' : ''}`}>
+      <main className={mainClass}>
         <AlertQueue
           history={history}
           activeId={loading ? activeId : null}
@@ -65,7 +72,11 @@ export default function Home() {
           error={error}
           onTriage={handleTriage}
         />
-        <IntelPanel result={result} />
+        <IntelPanel
+          result={result}
+          collapsed={intelCollapsed}
+          onToggle={() => setIntelCollapsed(p => !p)}
+        />
       </main>
     </div>
   )

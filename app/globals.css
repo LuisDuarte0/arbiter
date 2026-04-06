@@ -190,3 +190,15 @@ input, textarea, button { font-family: inherit; }
   letter-spacing: 0.06em;
   line-height: 1.7;
 }
+
+.arb-main-intel-collapsed { grid-template-columns: 248px 1fr 40px; }
+
+.arb-intel-collapsed {
+  background: var(--bg-panel);
+  border-left: 0.5px solid var(--border);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 14px;
+  height: 100%;
+}

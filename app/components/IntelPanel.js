@@ -11,12 +11,23 @@ function ScoreBar({ value, max = 100, color = 'red' }) {
   )
 }
 
-export default function IntelPanel({ result }) {
+export default function IntelPanel({ result, collapsed, onToggle }) {
+  if (collapsed) {
+    return (
+      <div className="arb-intel-collapsed">
+        <button className="arb-collapse-btn" onClick={onToggle} title="Expand intel">‹</button>
+      </div>
+    )
+  }
+
   if (!result) return (
     <div className="arb-panel arb-intel">
       <div className="arb-panel-header">
         <span className="arb-panel-title">Threat Intelligence</span>
-        <span className="arb-panel-badge">PENDING</span>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <span className="arb-panel-badge">PENDING</span>
+          <button className="arb-collapse-btn" onClick={onToggle} title="Collapse">›</button>
+        </div>
       </div>
       <div className="arb-empty">
         <svg viewBox="-8 0 136 120" width="36" height="32" xmlns="http://www.w3.org/2000/svg">
@@ -31,16 +42,19 @@ export default function IntelPanel({ result }) {
 
   const { enrichment, ips } = result
   const primaryIP = ips?.[0] ?? null
-  const intel = primaryIP ? enrichment[primaryIP] : null
-  const abuse = intel?.abuseipdb ?? null
-  const vt = intel?.virustotal ?? null
-  const otx = intel?.otx ?? null
+  const intel     = primaryIP ? enrichment[primaryIP] : null
+  const abuse     = intel?.abuseipdb ?? null
+  const vt        = intel?.virustotal ?? null
+  const otx       = intel?.otx ?? null
 
   return (
     <div className="arb-panel arb-intel">
       <div className="arb-panel-header">
         <span className="arb-panel-title">Threat Intelligence</span>
-        <span className="arb-panel-badge">{ips?.length ?? 0} IP{ips?.length !== 1 ? 'S' : ''} ANALYZED</span>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <span className="arb-panel-badge">{ips?.length ?? 0} IP{ips?.length !== 1 ? 'S' : ''} ANALYZED</span>
+          <button className="arb-collapse-btn" onClick={onToggle} title="Collapse">›</button>
+        </div>
       </div>
 
       {!primaryIP && (
@@ -63,6 +77,9 @@ export default function IntelPanel({ result }) {
                   <div className="arb-meta-row"><span className="arb-mk">ASN</span><span className="arb-mv">{vt.asn ? `AS${vt.asn}` : '—'}</span></div>
                   <div className="arb-meta-row"><span className="arb-mk">AS OWNER</span><span className="arb-mv">{vt.asOwner ?? '—'}</span></div>
                 </>}
+                {abuse.isTorNode && (
+                  <div className="arb-meta-row"><span className="arb-mk">TYPE</span><span className="arb-mv arb-mv-bad">Tor Exit Node</span></div>
+                )}
               </div>
             )}
           </div>
@@ -100,6 +117,12 @@ export default function IntelPanel({ result }) {
                 <span className="arb-mk">PULSE COUNT</span>
                 <span className={`arb-mv ${otx.pulseCount > 0 ? 'arb-mv-bad' : ''}`}>{otx.pulseCount} PULSES</span>
               </div>
+              {otx.malwareFamily && (
+                <div className="arb-meta-row" style={{ marginBottom: '10px' }}>
+                  <span className="arb-mk">MALWARE</span>
+                  <span className="arb-mv arb-mv-bad">{otx.malwareFamily}</span>
+                </div>
+              )}
               {otx.tags?.length > 0 && (
                 <div className="arb-tags">
                   {otx.tags.slice(0, 6).map((tag, i) => (

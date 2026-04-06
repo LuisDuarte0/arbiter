@@ -1,0 +1,106 @@
+.header {
+  height: 52px;
+  background: rgba(7,11,17,0.97);
+  border-bottom: 0.5px solid var(--border-bright);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  flex-shrink: 0;
+  gap: 0;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  margin-right: 28px;
+}
+
+.wordmark {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--text-primary);
+}
+
+.divider {
+  width: 0.5px;
+  height: 22px;
+  background: var(--border-bright);
+  margin: 0 20px;
+  flex-shrink: 0;
+}
+
+.meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.caseId {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--amber);
+  letter-spacing: 0.08em;
+}
+
+.caseSub {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+}
+
+.right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
+.stat {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+}
+
+.stat span { color: var(--text-secondary); }
+
+.severityBadge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  border-radius: 3px;
+  padding: 2px 8px;
+  border: 0.5px solid;
+}
+
+.critical { background: var(--red-15); color: var(--red); border-color: var(--red-40); }
+.high     { background: var(--amber-15); color: var(--amber); border-color: var(--amber-40); }
+.medium   { background: var(--yellow-15); color: var(--yellow); border-color: var(--yellow-40); }
+.low      { background: var(--gray-15); color: #6B7280; border-color: var(--gray-40); }
+
+.live {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--green);
+  letter-spacing: 0.12em;
+}
+
+.dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  animation: blink 2s ease-in-out infinite;
+}
+
+@keyframes blink {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.25; }
+}

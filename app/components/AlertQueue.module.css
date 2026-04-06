@@ -1,0 +1,103 @@
+.panel {
+  background: var(--bg-panel);
+  border-right: 0.5px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.panelHeader {
+  padding: 13px 16px 11px;
+  border-bottom: 0.5px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  background: var(--bg-panel);
+  z-index: 2;
+}
+
+.panelTitle {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.panelBadge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-bright);
+  border-radius: 3px;
+  padding: 2px 7px;
+}
+
+.item {
+  padding: 12px 16px;
+  border-bottom: 0.5px solid var(--border);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.item:hover { background: var(--bg-card-hover); }
+
+.active {
+  background: var(--bg-card);
+  border-left: 2px solid var(--amber);
+  padding-left: 14px;
+}
+
+.itemTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.itemId {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.itemTactic {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 3px;
+}
+
+.itemAsset {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  border-radius: 3px;
+  padding: 2px 7px;
+  border: 0.5px solid;
+}
+
+.critical { background: var(--red-15); color: var(--red); border-color: var(--red-40); }
+.high     { background: var(--amber-15); color: var(--amber); border-color: var(--amber-40); }
+.medium   { background: var(--yellow-15); color: var(--yellow); border-color: var(--yellow-40); }
+.low      { background: var(--gray-15); color: #6B7280; border-color: var(--gray-40); }
+
+.footer {
+  padding: 11px 16px;
+  margin-top: auto;
+  border-top: 0.5px solid var(--border);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.05em;
+}

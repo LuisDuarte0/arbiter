@@ -351,6 +351,7 @@ Analyze this alert. Apply the MITRE mapping rules precisely. Weight the enrichme
     })
 
     const raw = completion.choices[0]?.message?.content ?? ''
+    console.log('[ARBITER] Raw output:', raw.slice(0, 300))
     const jsonMatch = raw.match(/\{[\s\S]*\}/)
     if (!jsonMatch) throw new Error('Model returned invalid JSON structure')
 

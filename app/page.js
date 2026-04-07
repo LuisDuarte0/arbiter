@@ -11,7 +11,12 @@ export default function Home() {
   const [loading, setLoading]               = useState(false)
   const [error, setError]                   = useState(null)
   const [activeId, setActiveId]             = useState(null)
-  const [history, setHistory]               = useState([])
+  const [history, setHistory] = useState(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('arbiter_history') ?? '[]')
+      return stored.map(item => ({ ...item, timestamp: new Date(item.timestamp) }))
+    } catch { return [] }
+  })
   const [queueCollapsed, setQueueCollapsed] = useState(false)
   const [intelCollapsed, setIntelCollapsed] = useState(false)
 
@@ -47,7 +52,7 @@ export default function Home() {
       if (data.error) throw new Error(data.error)
       setResult(data)
 
-      setHistory(prev => [{
+      const newEntry = {
         id: newId,
         timestamp: new Date(),
         classification: data.triage.classification,
@@ -57,7 +62,14 @@ export default function Home() {
         confidence: data.triage.confidence,
         fullResult: data,
         alertText: alertText,
-      }, ...prev])
+      }
+      setHistory(prev => {
+        const updated = [newEntry, ...prev]
+        try {
+          localStorage.setItem('arbiter_history', JSON.stringify(updated.slice(0, 50)))
+        } catch {}
+        return updated
+      })
 
       try {
         const existing = JSON.parse(localStorage.getItem('arbiter_audit') ?? '[]')
@@ -90,7 +102,7 @@ export default function Home() {
 
   return (
     <div className="arb-layout">
-      <Header activeId={activeId} result={result} />
+      <Header activeId={activeId} result={result} onReset={handleReset} />
       <main className={mainClass}>
         <AlertQueue
           history={history}

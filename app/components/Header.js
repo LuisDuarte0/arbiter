@@ -2,8 +2,7 @@
 import { useState, useEffect } from 'react'
 import AuditLog from './AuditLog'
 
-export default function Header({ activeId, result }) {
-  const severity = result?.triage?.severity ?? null
+export default function Header({ activeId, result, onReset }) {
   const [auditOpen, setAuditOpen] = useState(false)
   const [auditCount, setAuditCount] = useState(0)
 
@@ -33,14 +32,43 @@ export default function Header({ activeId, result }) {
           </div>
         </div>
         <div className="arb-hright">
-          {severity && (
-            <div className={`arb-badge arb-${severity.toLowerCase()}`}>{severity}</div>
+          {result && (
+            <button
+              onClick={onReset}
+              style={{
+                background: 'none',
+                border: '0.5px solid var(--amber-40)',
+                borderRadius: '3px',
+                color: 'var(--amber)',
+                fontFamily: 'var(--font-mono), monospace',
+                fontSize: '10px',
+                letterSpacing: '0.1em',
+                cursor: 'pointer',
+                padding: '5px 12px',
+                transition: 'background 0.15s',
+              }}
+              onMouseEnter={e => e.currentTarget.style.background = 'var(--amber-15)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'none'}
+            >
+              NEW ANALYSIS
+            </button>
           )}
-          <button className="arb-audit-btn" onClick={() => setAuditOpen(true)}>
+          <button
+            className="arb-audit-btn"
+            onClick={() => setAuditOpen(true)}
+            style={{
+              background: auditCount > 0 ? 'var(--amber-15)' : 'none',
+              border: '0.5px solid var(--amber-40)',
+              color: 'var(--amber)',
+            }}
+          >
             AUDIT LOG
-            {auditCount > 0 && <span className="arb-audit-count">{auditCount}</span>}
+            {auditCount > 0 && (
+              <span className="arb-audit-count">{auditCount}</span>
+            )}
           </button>
           <div className="arb-stat">POWERED BY <span>GROQ · LLAMA 3.3</span></div>
+          <div className="arb-stat">BY <span>LUIS DUARTE</span></div>
           <div className="arb-hdivider" />
           <div className="arb-live">
             <div className="arb-dot" />

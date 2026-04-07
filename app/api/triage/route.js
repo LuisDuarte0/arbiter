@@ -323,7 +323,7 @@ export async function POST(request) {
           model: 'llama-3.3-70b-versatile',
           temperature: 0.1,
           max_tokens: 2000,
-          stream: true,
+          stream: false,
           messages: [
             { role: 'system', content: SYSTEM_PROMPT },
             {
@@ -344,12 +344,7 @@ Analyze this alert. Apply the MITRE mapping rules precisely. Weight the enrichme
           ]
         })
 
-        // Collect streamed tokens
-        let raw = ''
-        for await (const chunk of groqStream) {
-          const token = chunk.choices[0]?.delta?.content ?? ''
-          raw += token
-        }
+        const raw = groqStream.choices[0]?.message?.content ?? ''
 
         // Parse and validate
         const jsonMatch = raw.match(/\{[\s\S]*\}/)

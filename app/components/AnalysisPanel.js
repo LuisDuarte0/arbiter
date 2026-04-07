@@ -90,6 +90,7 @@ const S = {
     padding: '16px 18px',
     display: 'flex',
     flexDirection: 'column',
+    justifyContent: 'center',
   },
   metaBlock: {
     display: 'flex',

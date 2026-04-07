@@ -2,7 +2,7 @@
 
 **AI-powered SOC alert triage.** Paste a raw security alert. Get a structured incident report in under ten seconds.
 
-→ **[Live Demo](https://your-arbiter-url.vercel.app)**
+→ **[Live Demo](https://arbiter-security.vercel.app)**
 
 ---
 

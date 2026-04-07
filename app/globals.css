@@ -190,3 +190,11 @@ input, textarea, button { font-family: inherit; }
 .arb-audit-close:hover { color: var(--text-primary); }
 .arb-audit-raw { font-family: var(--font-mono), monospace; font-size: 10px; color: var(--text-secondary); line-height: 1.8; white-space: pre-wrap; word-break: break-word; }
 .arb-audit-meta-item { font-family: var(--font-mono), monospace; font-size: 10px; }
+
+/* EVIDENCE */
+.arb-evidence-list { display: flex; flex-direction: column; gap: 6px; }
+.arb-evidence-item { display: flex; align-items: center; gap: 10px; }
+.arb-evidence-tag { font-family: var(--font-mono), monospace; font-size: 10px; background: var(--amber-15); color: var(--amber); border: 0.5px solid var(--amber-40); border-radius: 3px; padding: 3px 8px; white-space: nowrap; }
+.arb-evidence-arrow { font-family: var(--font-mono), monospace; font-size: 10px; color: var(--text-muted); }
+.arb-textarea-wrapper { position: relative; }
+.arb-highlight { background: rgba(245,158,11,0.2); border-radius: 2px; }

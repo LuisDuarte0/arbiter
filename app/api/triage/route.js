@@ -36,9 +36,19 @@ async function enrichIP(ip) {
 
   const [abuseResult, vtResult, otxResult] = await Promise.allSettled([
     fetch(
-      `https://api.abuseipdb.com/api/v2/check?ipAddress=${ip}&maxAgeInDays=90&verbose=true`,
-      { headers: { 'Key': process.env.ABUSEIPDB_API_KEY, 'Accept': 'application/json' } }
-    ).then(r => r.json()),
+      `https://api.abuseipdb.com/api/v2/check?ipAddress=${ip}&maxAgeInDays=90`,
+      {
+        method: 'GET',
+        headers: {
+          'Key': process.env.ABUSEIPDB_API_KEY,
+          'Accept': 'application/json',
+        }
+      }
+    ).then(async r => {
+      const text = await r.text()
+      console.log('[ARBITER] AbuseIPDB status:', r.status, 'body:', text)
+      return JSON.parse(text)
+    }),
 
     fetch(
       `https://www.virustotal.com/api/v3/ip_addresses/${ip}`,
@@ -281,8 +291,9 @@ A single valid JSON object. No markdown. No backticks. No preamble. No explanati
   "mitre_tactic": string,
   "affected_asset": string (actual hostname from alert, not generic),
   "asset_is_critical": boolean,
-  "recommendations": string[] (exactly 5 items, specific, ordered by urgency),
-  "reasoning": string (2–4 sentences, dense with specific named indicators, zero filler)
+  "recommendations": string[] (exactly 5 items, specific, ordered by urgency, each under 120 characters),
+  "reasoning": string (2–4 sentences, dense with specific named indicators, zero filler),
+  "evidence": string[] (exactly 3–6 items, each being a specific raw field from the alert that directly drove this verdict, formatted as "FIELD=VALUE" exactly as it appears in the raw alert — e.g. "EventCode=4625", "FailureReason=%%2313", "Count=47", "IpAddress=185.220.101.47". Only include fields that actually influenced the classification, severity, or MITRE mapping. Never include generic fields like timestamps unless they were specifically relevant.)
 }`
 
 // ── ROUTE HANDLER ─────────────────────────────────────────────────────────────
@@ -296,6 +307,9 @@ export async function POST(request) {
     }
 
     const parsedAlert = parseAlert(alertText)
+    const truncatedAlert = (alertText.length > 3000
+      ? alertText.slice(0, 3000) + '\n[TRUNCATED]'
+      : alertText).replace(/"/g, "'")
     const ips = extractIPs(alertText)
 
     const enrichment = {}
@@ -314,7 +328,7 @@ export async function POST(request) {
     const completion = await groq.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
       temperature: 0.1,
-      max_tokens: 1500,
+      max_tokens: 4000,
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         {
@@ -322,7 +336,7 @@ export async function POST(request) {
           content: `ALERT TYPE: ${parsedAlert.alertType}
 
 RAW ALERT:
-${alertText}
+${truncatedAlert}
 
 PRE-PARSED FIELDS:
 ${parsedContext || 'No structured fields extracted'}
@@ -336,6 +350,7 @@ Analyze this alert. Apply the MITRE mapping rules precisely. Weight the enrichme
     })
 
     const raw = completion.choices[0]?.message?.content ?? ''
+    console.log('[ARBITER] Raw model output:', raw.slice(0, 500))
     const jsonMatch = raw.match(/\{[\s\S]*\}/)
     if (!jsonMatch) throw new Error('Model returned invalid JSON structure')
 

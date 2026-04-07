@@ -6,14 +6,28 @@ import AnalysisPanel from './components/AnalysisPanel'
 import IntelPanel from './components/IntelPanel'
 
 export default function Home() {
-  const [alertText, setAlertText]       = useState('')
-  const [result, setResult]             = useState(null)
-  const [loading, setLoading]           = useState(false)
-  const [error, setError]               = useState(null)
-  const [activeId, setActiveId]         = useState(null)
-  const [history, setHistory]           = useState([])
+  const [alertText, setAlertText]           = useState('')
+  const [result, setResult]                 = useState(null)
+  const [loading, setLoading]               = useState(false)
+  const [error, setError]                   = useState(null)
+  const [activeId, setActiveId]             = useState(null)
+  const [history, setHistory]               = useState([])
   const [queueCollapsed, setQueueCollapsed] = useState(false)
   const [intelCollapsed, setIntelCollapsed] = useState(false)
+
+  function handleReset() {
+    setAlertText('')
+    setResult(null)
+    setError(null)
+    setActiveId(null)
+  }
+
+  function handleSelectHistory(item) {
+    setActiveId(item.id)
+    setResult(item.fullResult)
+    setAlertText(item.alertText)
+    setError(null)
+  }
 
   async function handleTriage() {
     if (!alertText.trim()) return
@@ -32,6 +46,7 @@ export default function Home() {
       const data = await res.json()
       if (data.error) throw new Error(data.error)
       setResult(data)
+
       setHistory(prev => [{
         id: newId,
         timestamp: new Date(),
@@ -40,7 +55,24 @@ export default function Home() {
         tactic: data.triage.tactic,
         asset: data.triage.affected_asset,
         confidence: data.triage.confidence,
+        fullResult: data,
+        alertText: alertText,
       }, ...prev])
+
+      try {
+        const existing = JSON.parse(localStorage.getItem('arbiter_audit') ?? '[]')
+        const entry = {
+          id: newId,
+          timestamp: new Date().toISOString(),
+          alertText,
+          triage: data.triage,
+          enrichment: data.enrichment,
+          ips: data.ips,
+          meta: data.meta,
+        }
+        localStorage.setItem('arbiter_audit', JSON.stringify([entry, ...existing].slice(0, 100)))
+      } catch { /* localStorage unavailable */ }
+
     } catch (err) {
       setError(err.message)
     } finally {
@@ -50,8 +82,10 @@ export default function Home() {
 
   const mainClass = [
     'arb-main',
-    queueCollapsed ? 'arb-main-collapsed' : '',
-    intelCollapsed ? 'arb-main-intel-collapsed' : '',
+    queueCollapsed && intelCollapsed ? 'arb-main-both-collapsed'
+      : queueCollapsed ? 'arb-main-collapsed'
+      : intelCollapsed ? 'arb-main-intel-collapsed'
+      : '',
   ].filter(Boolean).join(' ')
 
   return (
@@ -63,6 +97,7 @@ export default function Home() {
           activeId={loading ? activeId : null}
           collapsed={queueCollapsed}
           onToggle={() => setQueueCollapsed(p => !p)}
+          onSelect={handleSelectHistory}
         />
         <AnalysisPanel
           alertText={alertText}
@@ -71,6 +106,7 @@ export default function Home() {
           loading={loading}
           error={error}
           onTriage={handleTriage}
+          onReset={handleReset}
         />
         <IntelPanel
           result={result}

@@ -4,19 +4,36 @@ function Badge({ severity }) {
   return <span className={`arb-badge arb-${severity.toLowerCase()}`}>{severity}</span>
 }
 
-export default function AnalysisPanel({ alertText, setAlertText, result, loading, error, onTriage }) {
+export default function AnalysisPanel({ alertText, setAlertText, result, loading, error, onTriage, onReset }) {
   const triage = result?.triage ?? null
 
   return (
     <div className="arb-panel arb-analysis">
       <div className="arb-panel-header">
         <span className="arb-panel-title">Analysis</span>
-        {triage && (
-          <div className="arb-header-right">
-            <Badge severity={triage.severity} />
-            <span className="arb-panel-badge">{triage.confidence}% CONFIDENCE</span>
-          </div>
-        )}
+        <div className="arb-header-right">
+          {triage && <Badge severity={triage.severity} />}
+          {triage && <span className="arb-panel-badge">{triage.confidence}% CONFIDENCE</span>}
+          {result && (
+            <button
+              onClick={onReset}
+              style={{
+                background: 'none',
+                border: '0.5px solid var(--border-bright)',
+                borderRadius: '3px',
+                color: 'var(--text-muted)',
+                fontFamily: 'var(--font-mono), monospace',
+                fontSize: '10px',
+                letterSpacing: '0.1em',
+                cursor: 'pointer',
+                padding: '3px 10px',
+                transition: 'color 0.15s'
+              }}
+            >
+              NEW ANALYSIS
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="arb-input-block">

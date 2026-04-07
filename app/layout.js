@@ -14,12 +14,15 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata = {
   title: 'ARBITER — AI Alert Triage',
   description: 'AI-powered SOC alert triage and threat intelligence.',
+  icons: {
+    icon: '/favicon.svg',
+  },
 }
 
 export default function RootLayout({ children }) {
   return (
     <html lang="en" className={`${dmSans.variable} ${jetbrainsMono.variable}`} suppressHydrationWarning>
-      <body>{children}</body>
+      <body suppressHydrationWarning>{children}</body>
     </html>
   )
 }

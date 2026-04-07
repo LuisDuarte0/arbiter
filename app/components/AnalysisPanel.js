@@ -7,7 +7,6 @@ function Badge({ severity }) {
 }
 
 const S = {
-  // VERDICT HERO
   verdictHero: {
     padding: '18px 22px',
     borderBottom: '0.5px solid var(--border)',
@@ -75,8 +74,6 @@ const S = {
     marginTop: '4px',
     marginLeft: 'auto',
   },
-
-  // TWO-COLUMN BODY
   twoCol: {
     display: 'grid',
     gridTemplateColumns: '1fr 1fr',
@@ -94,8 +91,6 @@ const S = {
     display: 'flex',
     flexDirection: 'column',
   },
-
-  // LEFT COLUMN BLOCKS
   metaBlock: {
     display: 'flex',
     flexDirection: 'column',
@@ -156,8 +151,6 @@ const S = {
   },
   chipSep: { color: 'rgba(245,158,11,0.35)' },
   chipVal: { color: 'var(--text-primary)', fontSize: '9px' },
-
-  // RIGHT COLUMN — ACTIONS
   actionsLabel: {
     fontFamily: 'var(--font-mono), monospace',
     fontSize: '8px',
@@ -191,14 +184,6 @@ const S = {
     flexShrink: '0',
     marginTop: '1px',
   },
-  stepLine: {
-    position: 'absolute',
-    left: '8px',
-    top: '20px',
-    width: '0.5px',
-    bottom: '0',
-    background: 'var(--border-bright)',
-  },
   stepText: {
     fontSize: '12px',
     color: 'var(--text-secondary)',
@@ -206,8 +191,6 @@ const S = {
     paddingBottom: '10px',
     flex: '1',
   },
-
-  // REASONING — FULL WIDTH
   reasoningSection: {
     padding: '14px 22px',
     borderBottom: '0.5px solid var(--border)',
@@ -221,8 +204,6 @@ const S = {
     color: 'var(--text-secondary)',
     lineHeight: '1.85',
   },
-
-  // CONTAINMENT CTA
   containmentSection: {
     padding: '14px 22px 18px',
     display: 'flex',
@@ -257,14 +238,13 @@ const S = {
   },
 }
 
-export default function AnalysisPanel({ alertText, setAlertText, result, loading, error, onTriage, onReset }) {
+export default function AnalysisPanel({ alertText, setAlertText, result, loading, loadingPhase, error, onTriage, onReset }) {
   const triage = result?.triage ?? null
   const [containmentOpen, setContainmentOpen] = useState(false)
 
   return (
     <div className="arb-panel arb-analysis">
 
-      {/* INPUT BLOCK */}
       <div className="arb-input-block">
         <div className="arb-input-header">
           <span className="arb-input-label">RAW ALERT INPUT</span>
@@ -324,19 +304,20 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
         )}
       </div>
 
-      {/* LOADING */}
       {loading && (
         <div className="arb-loading">
           <div className="arb-loading-dot" />
-          <span className="arb-loading-text">ARBITER IS ANALYZING YOUR ALERT</span>
+          <span className="arb-loading-text">
+            {loadingPhase === 'enriching'
+              ? 'ENRICHING THREAT INTELLIGENCE...'
+              : 'ARBITER IS ANALYZING YOUR ALERT'}
+          </span>
         </div>
       )}
 
-      {/* RESULTS */}
       {triage && (
         <div>
 
-          {/* VERDICT HERO — full width */}
           <div style={S.verdictHero}>
             <div style={S.verdictLeft}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -369,21 +350,15 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
             </div>
           </div>
 
-          {/* TWO COLUMN BODY */}
           <div style={S.twoCol}>
-
-            {/* LEFT — MITRE + ASSET + EVIDENCE */}
             <div style={S.leftCol}>
-
               <div style={S.metaBlock}>
                 <div style={S.sectionLabel}>MITRE ATT&CK</div>
                 <div style={S.metaId}>{triage.mitre_id}</div>
                 <div style={S.metaName}>{triage.mitre_name}</div>
                 <div style={S.metaDetail}>{triage.mitre_tactic} · Windows · Security Logs</div>
               </div>
-
               <div style={S.divider} />
-
               <div style={S.metaBlock}>
                 <div style={S.sectionLabel}>AFFECTED ASSET</div>
                 <div style={S.assetName}>{triage.affected_asset}</div>
@@ -391,7 +366,6 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                   <span className="arb-asset-critical" style={{ marginTop: '4px', display: 'inline-block' }}>CRITICAL ASSET</span>
                 )}
               </div>
-
               {triage.evidence?.length > 0 && (
                 <>
                   <div style={S.divider} />
@@ -418,10 +392,8 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                   </div>
                 </>
               )}
-
             </div>
 
-            {/* RIGHT — RECOMMENDED ACTIONS */}
             <div style={S.rightCol}>
               <div style={S.actionsLabel}>RECOMMENDED ACTIONS</div>
               <div style={S.stepsList}>
@@ -440,16 +412,13 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                 ))}
               </div>
             </div>
-
           </div>
 
-          {/* ARBITER REASONING — full width bridge */}
           <div style={S.reasoningSection}>
             <div style={S.sectionLabel}>ARBITER REASONING</div>
             <div style={S.reasoningBody}>{triage.reasoning}</div>
           </div>
 
-          {/* CONTAINMENT CTA — integrated footer */}
           <div style={S.containmentSection}>
             <div style={S.containmentLeft}>
               <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '10px', color: 'var(--text-secondary)', letterSpacing: '0.04em' }}>

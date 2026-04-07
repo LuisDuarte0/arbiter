@@ -1,4 +1,5 @@
-export const maxDuration = 15
+export const maxDuration = 60
+
 import Groq from 'groq-sdk'
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
@@ -31,6 +32,18 @@ function detectAlertType(text) {
   return 'Generic Log'
 }
 
+// ── IP EXTRACTION ─────────────────────────────────────────────────────────────
+function extractIPs(text) {
+  return [...new Set(text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) ?? [])].filter(ip => {
+    const p = ip.split('.').map(Number)
+    return !p.some(n => n > 255)
+      && p[0] !== 127 && p[0] !== 10 && p[0] !== 0
+      && !(p[0] === 192 && p[1] === 168)
+      && !(p[0] === 172 && p[1] >= 16 && p[1] <= 31)
+      && !(p[0] === 169 && p[1] === 254)
+  })
+}
+
 // ── IP ENRICHMENT ─────────────────────────────────────────────────────────────
 async function enrichIP(ip) {
   const results = {}
@@ -38,18 +51,8 @@ async function enrichIP(ip) {
   const [abuseResult, vtResult, otxResult] = await Promise.allSettled([
     fetch(
       `https://api.abuseipdb.com/api/v2/check?ipAddress=${ip}&maxAgeInDays=90`,
-      {
-        method: 'GET',
-        headers: {
-          'Key': process.env.ABUSEIPDB_API_KEY,
-          'Accept': 'application/json',
-        }
-      }
-    ).then(async r => {
-      const text = await r.text()
-      console.log('[ARBITER] AbuseIPDB status:', r.status, 'body:', text)
-      return JSON.parse(text)
-    }),
+      { headers: { 'Key': process.env.ABUSEIPDB_API_KEY, 'Accept': 'application/json' } }
+    ).then(r => r.json()),
 
     fetch(
       `https://www.virustotal.com/api/v3/ip_addresses/${ip}`,
@@ -73,9 +76,7 @@ async function enrichIP(ip) {
       usageType:    d?.usageType ?? null,
       isTorNode:    d?.isTor ?? false,
     }
-  } else {
-    results.abuseipdb = null
-  }
+  } else { results.abuseipdb = null }
 
   if (vtResult.status === 'fulfilled' && !vtResult.value?.error) {
     const attrs = vtResult.value?.data?.attributes
@@ -89,9 +90,7 @@ async function enrichIP(ip) {
       asOwner:    attrs?.as_owner  ?? null,
       network:    attrs?.network   ?? null,
     }
-  } else {
-    results.virustotal = null
-  }
+  } else { results.virustotal = null }
 
   if (otxResult.status === 'fulfilled') {
     const d = otxResult.value
@@ -100,22 +99,9 @@ async function enrichIP(ip) {
       tags:          d?.tags ?? [],
       malwareFamily: d?.pulse_info?.pulses?.[0]?.malware_families?.[0]?.display_name ?? null,
     }
-  } else {
-    results.otx = null
-  }
+  } else { results.otx = null }
 
   return results
-}
-
-function extractIPs(text) {
-  return [...new Set(text.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) ?? [])].filter(ip => {
-    const p = ip.split('.').map(Number)
-    return !p.some(n => n > 255)
-      && p[0] !== 127 && p[0] !== 10 && p[0] !== 0
-      && !(p[0] === 192 && p[1] === 168)
-      && !(p[0] === 172 && p[1] >= 16 && p[1] <= 31)
-      && !(p[0] === 169 && p[1] === 254)
-  })
 }
 
 function buildEnrichmentSummary(enrichment, ips) {
@@ -258,13 +244,7 @@ Each of the 5 recommendations must:
   2. Be executable by a Tier 1–2 analyst right now without further context
   3. Be ordered: containment first → investigation second → validation third → hardening last
   4. Never be generic ("monitor the system", "review permissions" = REJECTED)
-
-Examples:
-  GOOD: "Block 185.220.101.47/32 at perimeter firewall and confirm block by monitoring 4625 stream from CORP-DC-01 for cessation"
-  BAD:  "Block the malicious IP address at the firewall"
-
-  GOOD: "Run: net user svc_backup /domain — verify last successful logon timestamp and source IP against known baseline"
-  BAD:  "Audit the affected service account for suspicious activity"
+  5. Each under 120 characters
 
 ═══ REASONING STANDARDS ═══
 Write exactly as a senior SOC analyst writes an escalation case note.
@@ -274,67 +254,81 @@ Write exactly as a senior SOC analyst writes an escalation case note.
 - The final sentence must state the single most important action or risk
 - Reference event IDs, failure reason codes, IP scores, pulse counts, asset type, count and frequency
 
-GOOD reasoning example:
-"47 consecutive 4625/%%2313 events against svc_backup from AS53667 (isTorNode=true, AbuseIPDB 98/100, 847 reports) in 180 seconds with no corresponding 4740 lockout event is consistent with automated password spraying against a misconfigured domain controller. The absence of lockout after 47 failures indicates the lockout threshold is not enforced on CORP-DC-01. Priority: isolate DC from the /32 source and audit for any 4624 events from 185.220.101.47 before closing."
-
-BAD reasoning example:
-"This alert shows suspicious activity that could potentially indicate a brute force attack. The IP address has a high abuse score. It is recommended to investigate further."
-
 ═══ OUTPUT ═══
 A single valid JSON object. No markdown. No backticks. No preamble. No explanation after. Exactly these fields:
 {
-  "classification": string (specific attack technique name, not generic category),
-  "tactic": string (MITRE tactic name, e.g. "Credential Access"),
+  "classification": string,
+  "tactic": string,
   "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
   "confidence": number 0–100,
-  "mitre_id": string (most specific subtechnique, e.g. T1110.001 not T1110),
+  "mitre_id": string,
   "mitre_name": string,
   "mitre_tactic": string,
-  "affected_asset": string (actual hostname from alert, not generic),
+  "affected_asset": string,
   "asset_is_critical": boolean,
-  "recommendations": string[] (exactly 5 items, specific, ordered by urgency, each under 120 characters),
-  "reasoning": string (2–4 sentences, dense with specific named indicators, zero filler),
-  "evidence": string[] (exactly 3–6 items, each being a specific raw field from the alert that directly drove this verdict, formatted as "FIELD=VALUE" exactly as it appears in the raw alert — e.g. "EventCode=4625", "FailureReason=%%2313", "Count=47", "IpAddress=185.220.101.47". Only include fields that actually influenced the classification, severity, or MITRE mapping. Never include generic fields like timestamps unless they were specifically relevant.)
+  "recommendations": string[] (exactly 5 items, each under 120 characters),
+  "reasoning": string (2–4 sentences, dense with specific named indicators),
+  "evidence": string[] (exactly 3–6 items, formatted as "FIELD=VALUE")
 }`
 
-// ── ROUTE HANDLER ─────────────────────────────────────────────────────────────
+// ── STREAMING ROUTE HANDLER ───────────────────────────────────────────────────
 export async function POST(request) {
   const startTime = Date.now()
 
-  try {
-    const { alertText } = await request.json()
-    if (!alertText?.trim() || alertText.trim().length < 10) {
-      return Response.json({ error: 'Alert text is too short.' }, { status: 400 })
-    }
+  const encoder = new TextEncoder()
 
-    const parsedAlert = parseAlert(alertText)
-    const truncatedAlert = (alertText.length > 3000
-      ? alertText.slice(0, 3000) + '\n[TRUNCATED]'
-      : alertText).replace(/"/g, "'")
-    const ips = extractIPs(alertText)
+  function send(controller, event, data) {
+    controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+  }
 
-    const enrichment = {}
-    if (ips.length > 0) {
-      const enrichResults = await Promise.all(ips.map(ip => enrichIP(ip)))
-      ips.forEach((ip, i) => { enrichment[ip] = enrichResults[i] })
-    }
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        const { alertText } = await request.json()
 
-    const enrichmentSummary = buildEnrichmentSummary(enrichment, ips)
+        if (!alertText?.trim() || alertText.trim().length < 10) {
+          send(controller, 'error', { message: 'Alert text is too short.' })
+          controller.close()
+          return
+        }
 
-    const parsedContext = Object.entries(parsedAlert)
-      .filter(([_, v]) => v !== null)
-      .map(([k, v]) => `${k}: ${v}`)
-      .join('\n')
+        const parsedAlert = parseAlert(alertText)
+        const truncatedAlert = (alertText.length > 3000
+          ? alertText.slice(0, 3000) + '\n[TRUNCATED]'
+          : alertText).replace(/"/g, "'")
+        const ips = extractIPs(alertText)
 
-    const completion = await groq.chat.completions.create({
-      model: 'llama-3.3-70b-versatile',
-      temperature: 0.1,
-      max_tokens: 4000,
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        {
-          role: 'user',
-          content: `ALERT TYPE: ${parsedAlert.alertType}
+        // ── PHASE 1: ENRICHMENT ──────────────────────────────────────────────
+        send(controller, 'status', { phase: 'enriching', message: 'Enriching threat intelligence...' })
+
+        const enrichment = {}
+        if (ips.length > 0) {
+          const enrichResults = await Promise.all(ips.map(ip => enrichIP(ip)))
+          ips.forEach((ip, i) => { enrichment[ip] = enrichResults[i] })
+        }
+
+        // Stream enrichment data immediately so UI can populate intel panel
+        send(controller, 'enrichment', { enrichment, ips })
+
+        // ── PHASE 2: LLM TRIAGE WITH FULL ENRICHMENT CONTEXT ────────────────
+        send(controller, 'status', { phase: 'analyzing', message: 'ARBITER is analyzing your alert...' })
+
+        const enrichmentSummary = buildEnrichmentSummary(enrichment, ips)
+        const parsedContext = Object.entries(parsedAlert)
+          .filter(([_, v]) => v !== null)
+          .map(([k, v]) => `${k}: ${v}`)
+          .join('\n')
+
+        const groqStream = await groq.chat.completions.create({
+          model: 'llama-3.3-70b-versatile',
+          temperature: 0.1,
+          max_tokens: 4000,
+          stream: true,
+          messages: [
+            { role: 'system', content: SYSTEM_PROMPT },
+            {
+              role: 'user',
+              content: `ALERT TYPE: ${parsedAlert.alertType}
 
 RAW ALERT:
 ${truncatedAlert}
@@ -346,52 +340,73 @@ THREAT ENRICHMENT:
 ${enrichmentSummary}
 
 Analyze this alert. Apply the MITRE mapping rules precisely. Weight the enrichment data. Return only the JSON triage object.`
+            }
+          ]
+        })
+
+        // Collect streamed tokens
+        let raw = ''
+        for await (const chunk of groqStream) {
+          const token = chunk.choices[0]?.delta?.content ?? ''
+          raw += token
         }
-      ]
-    })
 
-    const raw = completion.choices[0]?.message?.content ?? ''
-    console.log('[ARBITER] Raw output:', raw.slice(0, 300))
-    const jsonMatch = raw.match(/\{[\s\S]*\}/)
-    if (!jsonMatch) throw new Error('Model returned invalid JSON structure')
+        // Parse and validate
+        const jsonMatch = raw.match(/\{[\s\S]*\}/)
+        if (!jsonMatch) throw new Error('Model returned invalid JSON structure')
 
-    let triage
-    try {
-      triage = JSON.parse(jsonMatch[0])
-    } catch {
-      throw new Error('Failed to parse model JSON output')
-    }
+        let triage
+        try {
+          triage = JSON.parse(jsonMatch[0])
+        } catch {
+          throw new Error('Failed to parse model JSON output')
+        }
 
-    const required = ['classification','tactic','severity','confidence','mitre_id','mitre_name','mitre_tactic','affected_asset','asset_is_critical','recommendations','reasoning']
-    const missing = required.filter(f => !(f in triage))
-    if (missing.length) throw new Error(`Model response missing fields: ${missing.join(', ')}`)
+        const required = ['classification','tactic','severity','confidence','mitre_id','mitre_name','mitre_tactic','affected_asset','asset_is_critical','recommendations','reasoning']
+        const missing = required.filter(f => !(f in triage))
+        if (missing.length) throw new Error(`Model response missing fields: ${missing.join(', ')}`)
 
-    if (!Array.isArray(triage.recommendations) || triage.recommendations.length !== 5) {
-      triage.recommendations = (triage.recommendations ?? []).slice(0, 5)
-      while (triage.recommendations.length < 5) {
-        triage.recommendations.push('Review alert context and escalate if indicators persist.')
+        if (!Array.isArray(triage.recommendations) || triage.recommendations.length !== 5) {
+          triage.recommendations = (triage.recommendations ?? []).slice(0, 5)
+          while (triage.recommendations.length < 5) {
+            triage.recommendations.push('Review alert context and escalate if indicators persist.')
+          }
+        }
+
+        // Stream final triage result
+        send(controller, 'triage', {
+          triage,
+          enrichment,
+          ips,
+          meta: {
+            processingTime:    Date.now() - startTime,
+            enrichmentSources: ips.length > 0 ? ['abuseipdb', 'virustotal', 'otx'] : [],
+            alertType:         parsedAlert.alertType,
+            parsedFields:      Object.keys(parsedAlert).filter(k => parsedAlert[k] !== null),
+          }
+        })
+
+        send(controller, 'done', {})
+
+      } catch (err) {
+        console.error('[ARBITER] Streaming error:', err)
+        const is429 = err?.status === 429 || JSON.stringify(err).includes('rate_limit_exceeded')
+        send(controller, 'error', {
+          message: is429
+            ? 'RATE_LIMIT'
+            : err.message ?? 'Triage failed. Verify API keys and alert format.'
+        })
+      } finally {
+        controller.close()
       }
     }
+  })
 
-    return Response.json({
-      triage,
-      enrichment,
-      ips,
-      meta: {
-        processingTime:     Date.now() - startTime,
-        enrichmentSources:  ips.length > 0 ? ['abuseipdb', 'virustotal', 'otx'] : [],
-        alertType:          parsedAlert.alertType,
-        parsedFields:       Object.keys(parsedAlert).filter(k => parsedAlert[k] !== null),
-      }
-    })
-
-  } catch (err) {
-    console.error('[ARBITER] Triage error:', err)
-    const is429 = err?.status === 429 || JSON.stringify(err).includes('rate_limit_exceeded')
-    return Response.json({
-      error: is429
-        ? 'RATE_LIMIT'
-        : err.message ?? 'Triage failed. Verify API keys and alert format.'
-    }, { status: is429 ? 429 : 500 })
-  }
+  return new Response(stream, {
+    headers: {
+      'Content-Type':  'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection':    'keep-alive',
+    }
+  })
 }

@@ -305,7 +305,23 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
         <button className="arb-button" onClick={onTriage} disabled={loading || !alertText.trim()}>
           {loading ? 'ANALYZING...' : 'ANALYZE ALERT →'}
         </button>
-        {error && <div className="arb-error">{error}</div>}
+        {error && (
+          <div className="arb-error" style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:'12px' }}>
+            <span>
+              {error === 'RATE_LIMIT'
+                ? 'API rate limit reached. Groq free tier resets every few minutes — wait and try again.'
+                : error}
+            </span>
+            {error === 'RATE_LIMIT' && (
+              <button
+                onClick={onTriage}
+                style={{ background:'none', border:'0.5px solid var(--red-40)', borderRadius:'3px', color:'var(--red)', fontFamily:'var(--font-mono),monospace', fontSize:'9px', letterSpacing:'0.08em', cursor:'pointer', padding:'3px 8px', whiteSpace:'nowrap', flexShrink:0 }}
+              >
+                RETRY
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* LOADING */}

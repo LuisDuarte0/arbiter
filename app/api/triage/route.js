@@ -385,8 +385,11 @@ Analyze this alert. Apply the MITRE mapping rules precisely. Weight the enrichme
 
   } catch (err) {
     console.error('[ARBITER] Triage error:', err)
+    const is429 = err?.status === 429 || JSON.stringify(err).includes('rate_limit_exceeded')
     return Response.json({
-      error: err.message ?? 'Triage failed. Verify API keys and alert format.'
-    }, { status: 500 })
+      error: is429
+        ? 'RATE_LIMIT'
+        : err.message ?? 'Triage failed. Verify API keys and alert format.'
+    }, { status: is429 ? 429 : 500 })
   }
 }

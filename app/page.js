@@ -1,5 +1,5 @@
 'use client'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Header from './components/Header'
 import AlertQueue from './components/AlertQueue'
 import AnalysisPanel from './components/AnalysisPanel'
@@ -11,12 +11,13 @@ export default function Home() {
   const [loading, setLoading]               = useState(false)
   const [error, setError]                   = useState(null)
   const [activeId, setActiveId]             = useState(null)
-  const [history, setHistory] = useState(() => {
+  const [history, setHistory] = useState([])
+  useEffect(() => {
     try {
       const stored = JSON.parse(localStorage.getItem('arbiter_history') ?? '[]')
-      return stored.map(item => ({ ...item, timestamp: new Date(item.timestamp) }))
-    } catch { return [] }
-  })
+      setHistory(stored.map(item => ({ ...item, timestamp: new Date(item.timestamp) })))
+    } catch {}
+  }, [])
   const [queueCollapsed, setQueueCollapsed] = useState(false)
   const [intelCollapsed, setIntelCollapsed] = useState(false)
 

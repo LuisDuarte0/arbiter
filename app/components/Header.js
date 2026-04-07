@@ -7,10 +7,15 @@ export default function Header({ activeId, result, onReset }) {
   const [auditCount, setAuditCount] = useState(0)
 
   useEffect(() => {
-    try {
-      const logs = JSON.parse(localStorage.getItem('arbiter_audit') ?? '[]')
-      setAuditCount(logs.length)
-    } catch { setAuditCount(0) }
+    function updateCount() {
+      try {
+        const logs = JSON.parse(localStorage.getItem('arbiter_audit') ?? '[]')
+        setAuditCount(logs.length)
+      } catch { setAuditCount(0) }
+    }
+    updateCount()
+    window.addEventListener('storage', updateCount)
+    return () => window.removeEventListener('storage', updateCount)
   }, [result])
 
   return (

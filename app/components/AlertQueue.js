@@ -1,4 +1,5 @@
 'use client'
+import { useState } from 'react'
 
 function timeAgo(date) {
   const s = Math.floor((new Date() - date) / 1000)
@@ -9,20 +10,59 @@ function timeAgo(date) {
 }
 
 export default function AlertQueue({ history, activeId, collapsed, onToggle, onSelect }) {
+  const [query, setQuery] = useState('')
+
+  const filtered = query.trim()
+    ? history.filter(item => {
+        const q = query.toLowerCase()
+        return (
+          item.classification?.toLowerCase().includes(q) ||
+          item.asset?.toLowerCase().includes(q) ||
+          item.tactic?.toLowerCase().includes(q) ||
+          item.severity?.toLowerCase().includes(q) ||
+          item.id?.toLowerCase().includes(q)
+        )
+      })
+    : history
+
   return (
     <div className={`arb-panel arb-queue${collapsed ? ' arb-panel-collapsed' : ''}`}>
       <div className="arb-panel-header">
         {!collapsed && <span className="arb-panel-title">History</span>}
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+        <div style={{ display:'flex', gap:'8px', alignItems:'center', marginLeft: collapsed ? 'auto' : undefined }}>
           {!collapsed && <span className="arb-panel-badge">{history.length}</span>}
-          <button className="arb-collapse-btn" onClick={onToggle}>
+          <button className="arb-collapse-btn" onClick={onToggle} title={collapsed ? 'Expand' : 'Collapse'}>
             {collapsed ? '›' : '‹'}
           </button>
         </div>
       </div>
 
       <div className="arb-panel-content">
-        {activeId && (
+
+        {/* SEARCH */}
+        {history.length > 0 && (
+          <div style={{ padding:'8px 12px', borderBottom:'0.5px solid var(--border)', flexShrink:0 }}>
+            <input
+              type="text"
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search history..."
+              style={{
+                width:'100%',
+                background:'var(--bg-input)',
+                border:'0.5px solid var(--border-bright)',
+                borderRadius:'3px',
+                padding:'5px 8px',
+                fontFamily:'var(--font-mono),monospace',
+                fontSize:'10px',
+                color:'var(--text-secondary)',
+                outline:'none',
+              }}
+            />
+          </div>
+        )}
+
+        {activeId && !query && (
           <div className="arb-queue-item arb-queue-active">
             <div className="arb-queue-top">
               <span className="arb-queue-id">{activeId.slice(4, 17)}</span>
@@ -41,8 +81,16 @@ export default function AlertQueue({ history, activeId, collapsed, onToggle, onS
           </div>
         )}
 
-        {history.map((item) => (
-        <div key={item.id} className="arb-queue-item" onClick={() => onSelect?.(item)}>
+        {query && filtered.length === 0 && (
+          <div className="arb-queue-empty">No results for "{query}"</div>
+        )}
+
+        {filtered.map(item => (
+          <div
+            key={item.id}
+            className="arb-queue-item"
+            onClick={() => onSelect?.(item)}
+          >
             <div className="arb-queue-top">
               <span className="arb-queue-id">{item.id.slice(4, 17)}</span>
               <span className={`arb-badge arb-${item.severity.toLowerCase()}`}>{item.severity}</span>
@@ -54,9 +102,13 @@ export default function AlertQueue({ history, activeId, collapsed, onToggle, onS
 
         {history.length > 0 && (
           <div className="arb-queue-footer">
-            {history.length} {history.length === 1 ? 'analysis' : 'analyses'} this session
+            {query
+              ? `${filtered.length} of ${history.length} shown`
+              : `${history.length} ${history.length === 1 ? 'analysis' : 'analyses'} this session`
+            }
           </div>
         )}
+
       </div>
     </div>
   )

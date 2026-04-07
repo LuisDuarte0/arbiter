@@ -182,6 +182,11 @@ export default function AuditLog({ onClose }) {
     a.download = `arbiter-${e.id}.json`; a.click()
   }
 
+  async function exportPDF() {
+    const { exportToPDF } = await import('./ExportPDF')
+    await exportToPDF({ ...entry, id: entry.id }, entry.alertText)
+  }
+
   function clearAll() {
     if (!confirm('Clear all audit logs? This cannot be undone.')) return
     localStorage.removeItem('arbiter_audit')
@@ -219,8 +224,9 @@ export default function AuditLog({ onClose }) {
           <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
             {activeTab === 'log' && (
               <>
-                <button className="arb-audit-action-btn" onClick={exportOne}>EXPORT SELECTED</button>
+                <button className="arb-audit-action-btn" onClick={exportOne}>EXPORT JSON</button>
                 <button className="arb-audit-action-btn" onClick={exportAll}>EXPORT ALL</button>
+                <button className="arb-audit-action-btn" onClick={exportPDF} style={{ color:'var(--amber)', borderColor:'var(--amber-40)' }}>EXPORT PDF</button>
                 <button
                   className="arb-audit-action-btn"
                   onClick={clearAll}

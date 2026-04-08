@@ -6,265 +6,110 @@ function Badge({ severity }) {
   return <span className={`arb-badge arb-${severity.toLowerCase()}`}>{severity}</span>
 }
 
+// Decision signal badges derived from triage data
+function DecisionSignals({ triage, result }) {
+  const signals = []
+
+  if (result?.meta?.correlated)
+    signals.push({ label: 'REDIS: REPEAT', color: '#E57373', bg: 'rgba(229,115,115,0.12)' })
+  if (result?.meta?.activeCampaign)
+    signals.push({ label: 'CAMPAIGN ACTIVE', color: '#E57373', bg: 'rgba(229,115,115,0.18)' })
+
+  const enrichment = result?.enrichment
+  const ips = result?.ips ?? []
+  if (ips.length > 0) {
+    const ip = enrichment?.[ips[0]]
+    if (ip?.abuseipdb?.score >= 80)
+      signals.push({ label: 'INTEL: MALICIOUS', color: 'var(--red)', bg: 'rgba(239,68,68,0.12)' })
+    else if (ip?.abuseipdb?.score >= 40)
+      signals.push({ label: 'INTEL: SUSPICIOUS', color: '#F59E0B', bg: 'rgba(245,158,11,0.12)' })
+    else if (ips.length > 0)
+      signals.push({ label: 'INTEL: CLEAN', color: 'var(--text-muted)', bg: 'transparent' })
+    if (ip?.abuseipdb?.isTorNode)
+      signals.push({ label: 'TOR: CONFIRMED', color: 'var(--red)', bg: 'rgba(239,68,68,0.1)' })
+  } else {
+    signals.push({ label: 'INTEL: NO IP', color: 'var(--text-muted)', bg: 'transparent' })
+  }
+
+  if (triage.asset_is_critical)
+    signals.push({ label: 'ASSET: CRITICAL', color: '#F59E0B', bg: 'rgba(245,158,11,0.1)' })
+
+  if (['CRITICAL', 'HIGH'].includes(triage.severity))
+    signals.push({ label: `SEV: ${triage.severity}`, color: triage.severity === 'CRITICAL' ? 'var(--red)' : '#F59E0B', bg: triage.severity === 'CRITICAL' ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.1)' })
+
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', padding: '8px 22px', borderBottom: '0.5px solid var(--border)', background: 'rgba(255,255,255,0.01)' }}>
+      <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.12em', alignSelf: 'center', marginRight: '4px' }}>DECISION SIGNALS</span>
+      {signals.map((s, i) => (
+        <span key={i} style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: s.color, background: s.bg, border: `0.5px solid ${s.color}40`, borderRadius: '2px', padding: '2px 6px', letterSpacing: '0.08em' }}>
+          {s.label}
+        </span>
+      ))}
+    </div>
+  )
+}
+
 const S = {
-  verdictHero: {
-    padding: '18px 22px',
-    borderBottom: '0.5px solid var(--border)',
-    display: 'flex',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    gap: '20px',
-  },
-  verdictLeft: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '6px',
-    flex: '1',
-  },
-  verdictTitle: {
-    fontSize: '24px',
-    fontWeight: '500',
-    color: 'var(--text-primary)',
-    lineHeight: '1.1',
-    letterSpacing: '-0.01em',
-  },
-  verdictSub: {
-    fontFamily: 'var(--font-mono), monospace',
-    fontSize: '10px',
-    color: 'var(--text-secondary)',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '8px',
-    flexWrap: 'wrap',
-  },
-  verdictRight: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '20px',
-    flexShrink: 0,
-  },
-  confBlock: {
-    textAlign: 'right',
-  },
-  confBig: {
-    fontFamily: 'var(--font-mono), monospace',
-    fontSize: '36px',
-    fontWeight: '600',
-    color: 'var(--amber)',
-    lineHeight: '1',
-  },
-  confUnit: {
-    fontFamily: 'var(--font-mono), monospace',
-    fontSize: '13px',
-    color: 'var(--text-muted)',
-  },
-  confLabel: {
-    fontFamily: 'var(--font-mono), monospace',
-    fontSize: '8px',
-    color: 'var(--text-muted)',
-    letterSpacing: '0.12em',
-    marginTop: '3px',
-  },
-  confBarWrap: {
-    width: '72px',
-    height: '2px',
-    background: 'var(--border-bright)',
-    borderRadius: '1px',
-    overflow: 'hidden',
-    marginTop: '4px',
-    marginLeft: 'auto',
-  },
-  twoCol: {
-    display: 'grid',
-    gridTemplateColumns: '1fr 1fr',
-    borderBottom: '0.5px solid var(--border)',
-  },
-  leftCol: {
-    padding: '16px 18px',
-    borderRight: '0.5px solid var(--border)',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '14px',
-  },
-  rightCol: {
-    padding: '16px 18px',
-    display: 'flex',
-    flexDirection: 'column',
-    justifyContent: 'center',
-  },
-  metaBlock: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '2px',
-  },
-  sectionLabel: {
-    fontFamily: 'var(--font-mono), monospace',
-    fontSize: '8px',
-    letterSpacing: '0.18em',
-    color: 'var(--text-muted)',
-    textTransform: 'uppercase',
-    marginBottom: '6px',
-  },
-  metaId: {
-    fontFamily: 'var(--font-mono), monospace',
-    fontSize: '11px',
-    color: 'var(--amber)',
-    fontWeight: '500',
-  },
-  metaName: {
-    fontSize: '13px',
-    fontWeight: '500',
-    color: 'var(--text-primary)',
-    lineHeight: '1.3',
-  },
-  metaDetail: {
-    fontFamily: 'var(--font-mono), monospace',
-    fontSize: '9px',
-    color: 'var(--text-secondary)',
-    marginTop: '2px',
-  },
-  assetName: {
-    fontFamily: 'var(--font-mono), monospace',
-    fontSize: '14px',
-    fontWeight: '500',
-    color: 'var(--text-primary)',
-  },
-  divider: {
-    height: '0.5px',
-    background: 'var(--border)',
-  },
-  evidenceChips: {
-    display: 'flex',
-    flexWrap: 'wrap',
-    gap: '5px',
-  },
-  chip: {
-    fontFamily: 'var(--font-mono), monospace',
-    fontSize: '9px',
-    background: 'var(--amber-15)',
-    color: 'var(--amber)',
-    border: '0.5px solid var(--amber-40)',
-    borderRadius: '3px',
-    padding: '3px 8px',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '4px',
-  },
+  verdictHero: { padding: '14px 22px', borderBottom: '0.5px solid var(--border)', display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '20px' },
+  verdictLeft: { display: 'flex', flexDirection: 'column', gap: '5px', flex: '1' },
+  verdictTitle: { fontSize: '22px', fontWeight: '500', color: 'var(--text-primary)', lineHeight: '1.1', letterSpacing: '-0.01em' },
+  verdictSub: { fontFamily: 'var(--font-mono), monospace', fontSize: '10px', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
+  verdictRight: { display: 'flex', alignItems: 'center', gap: '20px', flexShrink: 0 },
+  confBlock: { textAlign: 'right' },
+  confBig: { fontFamily: 'var(--font-mono), monospace', fontSize: '32px', fontWeight: '600', color: 'var(--amber)', lineHeight: '1' },
+  confUnit: { fontFamily: 'var(--font-mono), monospace', fontSize: '12px', color: 'var(--text-muted)' },
+  confLabel: { fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--text-muted)', letterSpacing: '0.12em', marginTop: '3px' },
+  confBarWrap: { width: '64px', height: '2px', background: 'var(--border-bright)', borderRadius: '1px', overflow: 'hidden', marginTop: '4px', marginLeft: 'auto' },
+  twoCol: { display: 'grid', gridTemplateColumns: '1fr 1fr', borderBottom: '0.5px solid var(--border)' },
+  leftCol: { padding: '12px 16px', borderRight: '0.5px solid var(--border)', display: 'flex', flexDirection: 'column', gap: '12px' },
+  rightCol: { padding: '12px 16px', display: 'flex', flexDirection: 'column', justifyContent: 'center' },
+  metaBlock: { display: 'flex', flexDirection: 'column', gap: '2px' },
+  sectionLabel: { fontFamily: 'var(--font-mono), monospace', fontSize: '8px', letterSpacing: '0.18em', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '5px' },
+  metaId: { fontFamily: 'var(--font-mono), monospace', fontSize: '11px', color: 'var(--amber)', fontWeight: '500' },
+  metaName: { fontSize: '12px', fontWeight: '500', color: 'var(--text-primary)', lineHeight: '1.3' },
+  metaDetail: { fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-secondary)', marginTop: '2px' },
+  assetName: { fontFamily: 'var(--font-mono), monospace', fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)' },
+  divider: { height: '0.5px', background: 'var(--border)' },
+  evidenceChips: { display: 'flex', flexWrap: 'wrap', gap: '4px' },
+  chip: { fontFamily: 'var(--font-mono), monospace', fontSize: '8px', background: 'var(--amber-15)', color: 'var(--amber)', border: '0.5px solid var(--amber-40)', borderRadius: '3px', padding: '2px 7px', display: 'flex', alignItems: 'center', gap: '4px' },
   chipSep: { color: 'rgba(245,158,11,0.35)' },
-  chipVal: { color: 'var(--text-primary)', fontSize: '9px' },
-  actionsLabel: {
-    fontFamily: 'var(--font-mono), monospace',
-    fontSize: '8px',
-    letterSpacing: '0.18em',
-    color: 'var(--text-muted)',
-    textTransform: 'uppercase',
-    marginBottom: '10px',
-  },
-  stepsList: {
-    display: 'flex',
-    flexDirection: 'column',
-    flex: '1',
-  },
-  step: {
-    display: 'flex',
-    gap: '10px',
-    alignItems: 'flex-start',
-  },
-  stepNum: {
-    width: '18px',
-    height: '18px',
-    borderRadius: '50%',
-    background: 'var(--bg-card)',
-    border: '0.5px solid var(--amber-40)',
-    color: 'var(--amber)',
-    fontFamily: 'var(--font-mono), monospace',
-    fontSize: '8px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: '0',
-    marginTop: '1px',
-  },
-  stepText: {
-    fontSize: '12px',
-    color: 'var(--text-secondary)',
-    lineHeight: '1.5',
-    paddingBottom: '10px',
-    flex: '1',
-  },
-  reasoningSection: {
-    padding: '14px 22px',
-    borderBottom: '0.5px solid var(--border)',
-  },
-  reasoningBody: {
-    background: 'var(--bg-input)',
-    borderLeft: '2px solid var(--amber)',
-    borderRadius: '0 4px 4px 0',
-    padding: '12px 16px',
-    fontSize: '12.5px',
-    color: 'var(--text-secondary)',
-    lineHeight: '1.85',
-  },
-  containmentSection: {
-    padding: '14px 22px 18px',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: '16px',
-  },
-  containmentLeft: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '2px',
-  },
-  containmentBtn: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '10px',
-    background: 'var(--amber)',
-    border: 'none',
-    borderRadius: '4px',
-    padding: '9px 18px',
-    cursor: 'pointer',
-    transition: 'opacity 0.15s',
-    flexShrink: 0,
-  },
-  containmentBtnLabel: {
-    fontFamily: 'var(--font-mono), monospace',
-    fontSize: '10px',
-    fontWeight: '500',
-    color: '#080C14',
-    letterSpacing: '0.08em',
-    whiteSpace: 'nowrap',
-  },
+  chipVal: { color: 'var(--text-primary)', fontSize: '8px' },
+  actionsLabel: { fontFamily: 'var(--font-mono), monospace', fontSize: '8px', letterSpacing: '0.18em', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '8px' },
+  stepsList: { display: 'flex', flexDirection: 'column', flex: '1' },
+  step: { display: 'flex', gap: '8px', alignItems: 'flex-start' },
+  stepNum: { width: '16px', height: '16px', borderRadius: '50%', background: 'var(--bg-card)', border: '0.5px solid var(--amber-40)', color: 'var(--amber)', fontFamily: 'var(--font-mono), monospace', fontSize: '7px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: '1px' },
+  stepText: { fontSize: '11px', color: 'var(--text-secondary)', lineHeight: '1.45', paddingBottom: '8px', flex: '1', fontFamily: 'var(--font-mono), monospace' },
+  reasoningSection: { padding: '12px 22px', borderBottom: '0.5px solid var(--border)' },
+  containmentSection: { padding: '12px 22px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px' },
+  containmentLeft: { display: 'flex', flexDirection: 'column', gap: '2px' },
+  containmentBtnLabel: { fontFamily: 'var(--font-mono), monospace', fontSize: '10px', fontWeight: '500', color: '#080C14', letterSpacing: '0.08em', whiteSpace: 'nowrap' },
 }
 
 export default function AnalysisPanel({ alertText, setAlertText, result, loading, loadingPhase, error, onTriage, onReset }) {
   const triage = result?.triage ?? null
   const [containmentOpen, setContainmentOpen] = useState(false)
 
+  const isUrgent = triage?.severity === 'CRITICAL' || triage?.severity === 'HIGH'
+
+  // Parse reasoning into sentences for structured display
+  function parseReasoning(text) {
+    if (!text) return []
+    return text.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 0)
+  }
+
+  const reasoningSentences = parseReasoning(triage?.reasoning)
+  const reasoningLabels = ['TECHNIQUE', 'INTELLIGENCE', 'RULE TRIGGERED', 'ACTION REQUIRED']
+
   return (
     <div className="arb-panel arb-analysis">
 
+      {/* INPUT BLOCK */}
       <div className="arb-input-block">
         <div className="arb-input-header">
           <span className="arb-input-label">RAW ALERT INPUT</span>
-          <label
-            style={{
-              fontFamily: 'var(--font-mono), monospace',
-              fontSize: '9px',
-              color: 'var(--amber)',
-              letterSpacing: '0.08em',
-              cursor: 'pointer',
-              borderBottom: '0.5px solid var(--amber-40)',
-              paddingBottom: '1px',
-            }}
-          >
+          <label style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--amber)', letterSpacing: '0.08em', cursor: 'pointer', borderBottom: '0.5px solid var(--amber-40)', paddingBottom: '1px' }}>
             UPLOAD FILE
-            <input
-              type="file"
-              accept=".txt,.log,.csv,.json,.xml,.evtx"
-              style={{ display: 'none' }}
+            <input type="file" accept=".txt,.log,.csv,.json,.xml,.evtx" style={{ display: 'none' }}
               onChange={e => {
                 const file = e.target.files?.[0]
                 if (!file) return
@@ -288,44 +133,34 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
         </button>
         {error && (
           <div className="arb-error" style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:'12px' }}>
-            <span>
-              {error === 'RATE_LIMIT'
-                ? 'API rate limit reached. Groq free tier resets every few minutes — wait and try again.'
-                : error}
-            </span>
+            <span>{error === 'RATE_LIMIT' ? 'API rate limit reached. Wait a few minutes and retry.' : error}</span>
             {error === 'RATE_LIMIT' && (
-              <button
-                onClick={onTriage}
-                style={{ background:'none', border:'0.5px solid var(--red-40)', borderRadius:'3px', color:'var(--red)', fontFamily:'var(--font-mono),monospace', fontSize:'9px', letterSpacing:'0.08em', cursor:'pointer', padding:'3px 8px', whiteSpace:'nowrap', flexShrink:0 }}
-              >
-                RETRY
-              </button>
+              <button onClick={onTriage} style={{ background:'none', border:'0.5px solid var(--red-40)', borderRadius:'3px', color:'var(--red)', fontFamily:'var(--font-mono),monospace', fontSize:'9px', letterSpacing:'0.08em', cursor:'pointer', padding:'3px 8px', whiteSpace:'nowrap', flexShrink:0 }}>RETRY</button>
             )}
           </div>
         )}
       </div>
 
+      {/* LOADING */}
       {loading && (
         <div className="arb-loading">
           <div className="arb-loading-dot" />
           <span className="arb-loading-text">
-            {loadingPhase === 'enriching'
-              ? 'ENRICHING THREAT INTELLIGENCE...'
-              : 'ARBITER IS ANALYZING YOUR ALERT'}
+            {loadingPhase === 'enriching' ? 'ENRICHING THREAT INTELLIGENCE...' : 'ARBITER IS ANALYZING YOUR ALERT'}
           </span>
         </div>
       )}
 
+      {/* EMPTY STATE */}
       {!result && !loading && (
-        <div style={{ padding: '40px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', opacity: 0.5 }}>
+        <div style={{ padding: '36px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', opacity: 0.5 }}>
           <svg viewBox="-8 0 136 120" width="28" height="25" xmlns="http://www.w3.org/2000/svg">
             <line x1="60" y1="8" x2="6" y2="112" stroke="#334055" strokeWidth="17" strokeLinecap="square"/>
             <line x1="60" y1="8" x2="114" y2="112" stroke="#334055" strokeWidth="17" strokeLinecap="square"/>
             <line x1="-6" y1="68" x2="126" y2="68" stroke="#334055" strokeWidth="7" strokeLinecap="square"/>
           </svg>
           <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '0.15em', textAlign: 'center', lineHeight: '1.8' }}>
-            READY FOR TRIAGE<br/>
-            <span style={{ fontSize: '8px', opacity: 0.6 }}>PASTE AN ALERT AND CLICK ANALYZE</span>
+            READY FOR TRIAGE<br/><span style={{ fontSize: '8px', opacity: 0.6 }}>PASTE AN ALERT AND CLICK ANALYZE</span>
           </div>
         </div>
       )}
@@ -333,20 +168,13 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
       {triage && (
         <div>
 
+          {/* VERDICT HERO */}
           <div style={S.verdictHero}>
             <div style={S.verdictLeft}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Badge severity={triage.severity} />
                 {result?.meta?.correlated && (
-                  <span style={{
-                    fontFamily: 'var(--font-mono), monospace',
-                    fontSize: '8px',
-                    letterSpacing: '0.1em',
-                    color: '#080C14',
-                    background: '#E57373',
-                    borderRadius: '3px',
-                    padding: '2px 7px',
-                  }}>
+                  <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', letterSpacing: '0.1em', color: '#080C14', background: '#E57373', borderRadius: '3px', padding: '2px 7px' }}>
                     CORRELATED ACTIVITY
                   </span>
                 )}
@@ -357,19 +185,13 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                 <span style={{ color: 'var(--border-bright)' }}>·</span>
                 <span style={{ color: 'var(--amber)' }}>{triage.mitre_id}</span>
                 {result?.meta?.processingTime && (
-                  <>
-                    <span style={{ color: 'var(--border-bright)' }}>·</span>
-                    <span style={{ color: 'var(--text-muted)' }}>{(result.meta.processingTime / 1000).toFixed(1)}s</span>
-                  </>
+                  <><span style={{ color: 'var(--border-bright)' }}>·</span><span style={{ color: 'var(--text-muted)' }}>{(result.meta.processingTime / 1000).toFixed(1)}s</span></>
                 )}
               </div>
             </div>
             <div style={S.verdictRight}>
               <div style={S.confBlock}>
-                <div>
-                  <span style={S.confBig}>{triage.confidence}</span>
-                  <span style={S.confUnit}>%</span>
-                </div>
+                <div><span style={S.confBig}>{triage.confidence}</span><span style={S.confUnit}>%</span></div>
                 <div style={S.confLabel}>CONFIDENCE</div>
                 <div style={S.confBarWrap}>
                   <div style={{ height: '100%', background: 'var(--amber)', borderRadius: '1px', width: `${triage.confidence}%` }} />
@@ -378,7 +200,13 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
             </div>
           </div>
 
+          {/* DECISION SIGNALS */}
+          <DecisionSignals triage={triage} result={result} />
+
+          {/* TWO COLUMN BODY */}
           <div style={S.twoCol}>
+
+            {/* LEFT — MITRE + ASSET + EVIDENCE */}
             <div style={S.leftCol}>
               <div style={S.metaBlock}>
                 <div style={S.sectionLabel}>MITRE ATT&CK</div>
@@ -389,7 +217,18 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
               <div style={S.divider} />
               <div style={S.metaBlock}>
                 <div style={S.sectionLabel}>AFFECTED ASSET</div>
-                <div style={S.assetName}>{triage.affected_asset}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{
+                    ...S.assetName,
+                    color: triage.asset_is_critical ? '#F59E0B' : 'var(--text-primary)',
+                    textShadow: triage.asset_is_critical ? '0 0 12px rgba(245,158,11,0.4)' : 'none',
+                  }}>{triage.affected_asset}</div>
+                  {triage.asset_is_critical && (
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#F59E0B" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                  )}
+                </div>
                 {triage.asset_is_critical && (
                   <span className="arb-asset-critical" style={{ marginTop: '4px', display: 'inline-block' }}>CRITICAL ASSET</span>
                 )}
@@ -407,12 +246,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                         return (
                           <div key={i} style={S.chip}>
                             <span>{field}</span>
-                            {val && (
-                              <>
-                                <span style={S.chipSep}>=</span>
-                                <span style={S.chipVal}>{val.length > 20 ? val.slice(0, 20) + '…' : val}</span>
-                              </>
-                            )}
+                            {val && <><span style={S.chipSep}>=</span><span style={S.chipVal}>{val.length > 20 ? val.slice(0, 20) + '…' : val}</span></>}
                           </div>
                         )
                       })}
@@ -422,31 +256,49 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
               )}
             </div>
 
+            {/* RIGHT — RECOMMENDED ACTIONS */}
             <div style={S.rightCol}>
               <div style={S.actionsLabel}>RECOMMENDED ACTIONS</div>
               <div style={S.stepsList}>
-                {triage.recommendations.map((rec, i) => (
-                  <div key={i} style={{ ...S.step, position: 'relative' }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
-                      <div style={S.stepNum}>{String(i + 1).padStart(2, '0')}</div>
-                      {i < triage.recommendations.length - 1 && (
-                        <div style={{ width: '0.5px', flex: '1', minHeight: '8px', background: 'var(--border-bright)', margin: '2px 0' }} />
-                      )}
+                {triage.recommendations.map((rec, i) => {
+                  const prov = triage.recommendation_provenance?.[i]
+                  const provColors = { enrichment_confirmed: 'var(--amber)', behavioral_heuristic: '#6B7FD4', account_action: '#E57373', forensic: '#9E9E9E', known_good_override: '#4CAF50' }
+                  const provLabels = { enrichment_confirmed: 'CTI', behavioral_heuristic: 'HEURISTIC', account_action: 'ACCOUNT', forensic: 'FORENSIC', known_good_override: 'KNOWN-GOOD' }
+                  return (
+                    <div key={i} style={{ ...S.step, position: 'relative' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                        <div style={S.stepNum}>{String(i + 1).padStart(2, '0')}</div>
+                        {i < triage.recommendations.length - 1 && <div style={{ width: '0.5px', flex: '1', minHeight: '6px', background: 'var(--border-bright)', margin: '2px 0' }} />}
+                      </div>
+                      <div style={{ flex: 1, paddingBottom: i === triage.recommendations.length - 1 ? 0 : '8px' }}>
+                        <div style={S.stepText}>{rec}</div>
+                        {prov && (
+                          <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: provColors[prov] ?? 'var(--text-muted)', letterSpacing: '0.1em', marginTop: '-4px', paddingBottom: '4px' }}>▲ {provLabels[prov] ?? prov}</div>
+                        )}
+                      </div>
                     </div>
-                    <div style={{ ...S.stepText, paddingBottom: i === triage.recommendations.length - 1 ? '0' : '10px' }}>
-                      {rec}
-                    </div>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
             </div>
           </div>
 
+          {/* STRUCTURED REASONING */}
           <div style={S.reasoningSection}>
             <div style={S.sectionLabel}>ARBITER REASONING</div>
-            <div style={S.reasoningBody}>{triage.reasoning}</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+              {reasoningSentences.map((sentence, i) => (
+                <div key={i} style={{ display: 'flex', gap: '10px', padding: '7px 0', borderBottom: i < reasoningSentences.length - 1 ? '0.5px solid var(--border)' : 'none' }}>
+                  <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--amber)', letterSpacing: '0.1em', minWidth: '90px', paddingTop: '1px', opacity: 0.7 }}>
+                    {reasoningLabels[i] ?? `POINT ${i + 1}`}
+                  </div>
+                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: '1.6', flex: 1 }}>{sentence}</div>
+                </div>
+              ))}
+            </div>
           </div>
 
+          {/* CONTAINMENT CTA */}
           <div style={S.containmentSection}>
             <div style={S.containmentLeft}>
               <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '10px', color: 'var(--text-secondary)', letterSpacing: '0.04em' }}>
@@ -457,14 +309,20 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
               </div>
             </div>
             <button
-              style={S.containmentBtn}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '10px',
+                background: isUrgent ? 'var(--red)' : 'var(--amber)',
+                border: 'none', borderRadius: '4px', padding: '9px 18px',
+                cursor: 'pointer', flexShrink: 0,
+                animation: isUrgent ? 'arbBtnPulse 2s ease-in-out infinite' : 'none',
+              }}
               onClick={() => setContainmentOpen(true)}
-              onMouseEnter={e => { e.currentTarget.style.opacity = '0.85' }}
-              onMouseLeave={e => { e.currentTarget.style.opacity = '1' }}
+              onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.animation = 'none' }}
+              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.animation = isUrgent ? 'arbBtnPulse 2s ease-in-out infinite' : 'none' }}
             >
+              <style>{`@keyframes arbBtnPulse { 0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0.4)}50%{box-shadow:0 0 0 6px rgba(239,68,68,0)} }`}</style>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#080C14" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="4 17 10 11 4 5" />
-                <line x1="12" y1="19" x2="20" y2="19" />
+                <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
               </svg>
               <span style={S.containmentBtnLabel}>GENERATE CONTAINMENT PLAYBOOK</span>
             </button>
@@ -474,10 +332,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
       )}
 
       {containmentOpen && result && (
-        <ContainmentModal
-          result={result}
-          onClose={() => setContainmentOpen(false)}
-        />
+        <ContainmentModal result={result} onClose={() => setContainmentOpen(false)} />
       )}
     </div>
   )

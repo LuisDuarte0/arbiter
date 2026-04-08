@@ -17,6 +17,7 @@ export default function Home() {
   const [intelCollapsed, setIntelCollapsed] = useState(false)
   const [mitreFilter, setMitreFilter]       = useState(null)
   const [indicatorCache, setIndicatorCache] = useState({})
+  const [ipFilter, setIpFilter] = useState(null)
 
   // Partial state — intel panel populates as soon as enrichment streams in
   const [streamedEnrichment, setStreamedEnrichment] = useState(null)
@@ -28,6 +29,12 @@ export default function Home() {
       setHistory(stored.map(item => ({ ...item, timestamp: new Date(item.timestamp) })))
     } catch {}
   }, [])
+
+  function handleIpFilter(ip) {
+    setIpFilter(ip)
+    setMitreFilter(null)
+    setQueueCollapsed(false)
+  }
 
   function handleReset() {
     setAlertText('')
@@ -204,6 +211,8 @@ export default function Home() {
   onSelect={handleSelectHistory}
   mitreFilter={mitreFilter}
   onMitreFilter={setMitreFilter}
+  ipFilter={ipFilter}
+  onIpFilter={setIpFilter}
 />
         <AnalysisPanel
           alertText={alertText}
@@ -216,11 +225,12 @@ export default function Home() {
           onReset={handleReset}
         />
         <IntelPanel
-  result={intelResult}
-  collapsed={intelCollapsed}
-  onToggle={() => setIntelCollapsed(p => !p)}
-  indicatorCache={indicatorCache}
-/>
+          result={intelResult}
+          collapsed={intelCollapsed}
+          onToggle={() => setIntelCollapsed(p => !p)}
+          indicatorCache={indicatorCache}
+          onIpFilter={handleIpFilter}
+        />
       </main>
     </div>
   )

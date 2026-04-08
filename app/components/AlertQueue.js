@@ -9,11 +9,17 @@ function timeAgo(date) {
   return `${Math.floor(m / 60)}h ago`
 }
 
-export default function AlertQueue({ history, activeId, collapsed, onToggle, onSelect, mitreFilter, onMitreFilter }) {
+export default function AlertQueue({ history, activeId, collapsed, onToggle, onSelect, mitreFilter, onMitreFilter, ipFilter, onIpFilter }) {
   const [query, setQuery] = useState('')
 
   const filtered = (() => {
     let items = history
+    if (ipFilter) {
+      items = items.filter(item =>
+        item.fullResult?.ips?.includes(ipFilter) ||
+        item.fullResult?.triage?.affected_asset?.includes(ipFilter)
+      )
+    }
     if (mitreFilter) {
       items = items.filter(item => item.fullResult?.triage?.mitre_id?.startsWith(mitreFilter))
     }
@@ -63,6 +69,13 @@ export default function AlertQueue({ history, activeId, collapsed, onToggle, onS
             >
               ✕ CLEAR
             </span>
+          </div>
+        )}
+
+        {ipFilter && (
+          <div style={{ padding: '5px 12px', borderBottom: '0.5px solid var(--border)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: 'rgba(229,115,115,0.08)', flexShrink: 0 }}>
+            <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '9px', color: '#E57373', letterSpacing: '0.08em' }}>IP: {ipFilter}</span>
+            <span onClick={() => onIpFilter?.(null)} style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '9px', color: 'var(--text-muted)', cursor: 'pointer', letterSpacing: '0.08em' }}>✕ CLEAR</span>
           </div>
         )}
 

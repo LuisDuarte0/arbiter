@@ -1,8 +1,89 @@
 export const maxDuration = 60
 
 import Groq from 'groq-sdk'
+import { Redis } from '@upstash/redis'
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
+
+const redis = new Redis({
+  url:   process.env.UPSTASH_REDIS_REST_URL,
+  token: process.env.UPSTASH_REDIS_REST_TOKEN,
+})
+
+// ── REDIS TEMPORAL CORRELATION ────────────────────────────────────────────────
+const REDIS_TTL = 86400 // 24 hours
+
+async function getRedisContext(ips, username) {
+  const keys = []
+  if (ips.length)  ips.forEach(ip => keys.push(`ip:${ip}`))
+  if (username)    keys.push(`user:${username}`)
+  if (!keys.length) return null
+
+  try {
+    const results = await Promise.all(keys.map(k => redis.get(k)))
+    const hits = results
+      .map((r, i) => r ? { key: keys[i], ...r } : null)
+      .filter(Boolean)
+    if (!hits.length) return null
+    return hits
+  } catch { return null }
+}
+
+async function writeRedisContext(ips, username, triage, caseId) {
+  const now = Date.now()
+  const entry = {
+    caseId,
+    severity:        triage.severity,
+    classification:  triage.classification,
+    affectedAsset:   triage.affected_asset,
+    timestamp:       now,
+  }
+
+  const writes = []
+
+  ips.forEach(ip => {
+    const key = `ip:${ip}`
+    writes.push(
+      redis.get(key).then(existing => {
+        const prev = existing ?? { count: 0, cases: [], assets: [] }
+        const updated = {
+          ...entry,
+          count:  prev.count + 1,
+          cases:  [caseId, ...(prev.cases ?? [])].slice(0, 10),
+          assets: [...new Set([triage.affected_asset, ...(prev.assets ?? [])])].slice(0, 10),
+        }
+        return redis.set(key, updated, { ex: REDIS_TTL })
+      })
+    )
+  })
+
+  if (username && username !== 'SYSTEM' && !username.includes('$')) {
+    const key = `user:${username}`
+    writes.push(
+      redis.get(key).then(existing => {
+        const prev = existing ?? { count: 0, cases: [], assets: [] }
+        const updated = {
+          ...entry,
+          count:  prev.count + 1,
+          cases:  [caseId, ...(prev.cases ?? [])].slice(0, 10),
+          assets: [...new Set([triage.affected_asset, ...(prev.assets ?? [])])].slice(0, 10),
+        }
+        return redis.set(key, updated, { ex: REDIS_TTL })
+      })
+    )
+  }
+
+  try { await Promise.all(writes) } catch { /* non-blocking */ }
+}
+
+function buildRedisContextSummary(hits) {
+  if (!hits?.length) return null
+  return hits.map(h => {
+    const age = Math.round((Date.now() - h.timestamp) / 60000)
+    const indicator = h.key.startsWith('ip:') ? `IP ${h.key.slice(3)}` : `User ${h.key.slice(5)}`
+    return `${indicator}: seen ${h.count}× in last 24h | last severity=${h.severity} | assets=[${(h.assets ?? []).join(', ')}] | ${age}min ago | cases=[${(h.cases ?? []).slice(0,3).join(', ')}]`
+  }).join('\n')
+}
 
 // ── ALERT PRE-PARSER ──────────────────────────────────────────────────────────
 function parseAlert(text) {
@@ -520,6 +601,15 @@ export async function POST(request) {
         // Stream enrichment data immediately so UI can populate intel panel
         send(controller, 'enrichment', { enrichment, ips })
 
+        // ── REDIS: READ HISTORICAL CONTEXT ───────────────────────────────────
+        const redisHits    = await getRedisContext(ips, parsedAlert.username)
+        const redisContext = buildRedisContextSummary(redisHits)
+        const isCorrelated = !!(redisHits?.length)
+
+        if (isCorrelated) {
+          send(controller, 'correlation', { hits: redisHits, summary: redisContext })
+        }
+
         // ── PHASE 2: LLM TRIAGE WITH FULL ENRICHMENT CONTEXT ────────────────
         send(controller, 'status', { phase: 'analyzing', message: 'ARBITER is analyzing your alert...' })
 
@@ -552,7 +642,10 @@ VERDICT: ${enrichmentJudgment.judgment}
 blockRecommendationAllowed: ${enrichmentJudgment.blockRecommendationAllowed}
 confidenceModifier: ${enrichmentJudgment.confidenceModifier > 0 ? '+' : ''}${enrichmentJudgment.confidenceModifier}
 
-Analyze this alert. Enumerate technical facts first. Apply MITRE mapping rules precisely. Return only the JSON triage object.`
+${redisContext ? `TEMPORAL CORRELATION (ARBITER MEMORY — last 24h):
+${redisContext}
+IMPORTANT: Reference this historical activity in your reasoning. If the same IP or user appears multiple times, state the count and time elapsed.
+` : ''}Analyze this alert. Enumerate technical facts first. Apply MITRE mapping rules precisely. Return only the JSON triage object.`
             }
           ]
         })
@@ -574,6 +667,10 @@ Analyze this alert. Enumerate technical facts first. Apply MITRE mapping rules p
         const missing = required.filter(f => !(f in triage))
         if (missing.length) throw new Error(`Model response missing fields: ${missing.join(', ')}`)
 
+          if (Array.isArray(triage.reasoning)) {
+            triage.reasoning = triage.reasoning.join(' ')
+          }
+
         if (!Array.isArray(triage.recommendations) || triage.recommendations.length !== 5) {
           triage.recommendations = (triage.recommendations ?? []).slice(0, 5)
           while (triage.recommendations.length < 5) {
@@ -581,16 +678,22 @@ Analyze this alert. Enumerate technical facts first. Apply MITRE mapping rules p
           }
         }
 
+        // Write to Redis after successful triage
+        const caseId = `ARB-${startTime}`
+        await writeRedisContext(ips, parsedAlert.username, triage, caseId)
+
         // Stream final triage result
         send(controller, 'triage', {
           triage,
           enrichment,
           ips,
+          correlation: isCorrelated ? { hits: redisHits, summary: redisContext } : null,
           meta: {
             processingTime:    Date.now() - startTime,
             enrichmentSources: ips.length > 0 ? ['abuseipdb', 'virustotal', 'otx'] : [],
             alertType:         parsedAlert.alertType,
             parsedFields:      Object.keys(parsedAlert).filter(k => parsedAlert[k] !== null),
+            correlated:        isCorrelated,
           }
         })
 

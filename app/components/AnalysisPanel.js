@@ -337,6 +337,19 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
             <div style={S.verdictLeft}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Badge severity={triage.severity} />
+                {result?.meta?.correlated && (
+                  <span style={{
+                    fontFamily: 'var(--font-mono), monospace',
+                    fontSize: '8px',
+                    letterSpacing: '0.1em',
+                    color: '#080C14',
+                    background: '#E57373',
+                    borderRadius: '3px',
+                    padding: '2px 7px',
+                  }}>
+                    CORRELATED ACTIVITY
+                  </span>
+                )}
               </div>
               <div style={S.verdictTitle}>{triage.classification}</div>
               <div style={S.verdictSub}>

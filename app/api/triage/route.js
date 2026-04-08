@@ -16,6 +16,8 @@ function parseAlert(text) {
     processName:   get(/ProcessName[=:\s]+(.+?)(?:\r?\n|$)/i),
     commandLine:   get(/(?:CommandLine|ProcessCommandLine)[=:\s]+(.+?)(?:\r?\n|$)/i),
     asset:         get(/(?:WorkstationName|ComputerName|Hostname|host)[=:\s]+(\S+)/i),
+    allAssets:     [...new Set((text.match(/(?:WorkstationName|ComputerName)[=:\s]+(\S+)/gi) ?? []).map(m => m.trim().split(/[=:\s]+/).pop()))].join(', '),
+    allEventCodes: [...new Set((text.match(/EventCode[=:\s]+(\d+)/gi) ?? []).map(m => m.trim().split(/[=:\s]+/).pop()))].join(', '),
     count:         get(/Count[=:\s]+(\d+)/i),
     fileHash:      get(/(?:MD5|SHA1|SHA256|Hashes)[=:\s]+([a-fA-F0-9]{32,64})/i),
     parentProcess: get(/(?:ParentProcessName|ParentImage)[=:\s]+(.+?)(?:\r?\n|$)/i),
@@ -104,171 +106,379 @@ async function enrichIP(ip) {
   return results
 }
 
-function buildEnrichmentSummary(enrichment, ips) {
-  if (!ips.length) return 'No public IPs detected in this alert.'
-  return ips.map(ip => {
+// ── ENRICHMENT JUDGMENT ENGINE ────────────────────────────────────────────────
+// Pre-computes enrichment consensus and weight signals before LLM sees the data.
+// This moves threshold logic from the non-deterministic LLM into deterministic JS.
+
+function buildEnrichmentJudgment(enrichment, ips) {
+  if (!ips.length) {
+    return {
+      summary: 'No public IPs detected. Analysis based on behavioral indicators only.',
+      judgment: 'NO_IP',
+      blockRecommendationAllowed: false,
+      confidenceModifier: 0,
+    }
+  }
+
+  const ipJudgments = ips.map(ip => {
     const d = enrichment[ip]
-    if (!d) return `IP ${ip}: enrichment unavailable`
-    const lines = [`IP ${ip}:`]
-    if (d.abuseipdb) lines.push(
-      `  AbuseIPDB: score=${d.abuseipdb.score}/100 | reports=${d.abuseipdb.totalReports} | isp="${d.abuseipdb.isp}" | country=${d.abuseipdb.country} | tor=${d.abuseipdb.isTorNode} | usage="${d.abuseipdb.usageType}"`
-    )
-    if (d.virustotal) lines.push(
-      `  VirusTotal: malicious=${d.virustotal.malicious} | suspicious=${d.virustotal.suspicious} | engines=${d.virustotal.total} | AS${d.virustotal.asn} "${d.virustotal.asOwner}" | network=${d.virustotal.network}`
-    )
-    if (d.otx) lines.push(
-      `  OTX: pulses=${d.otx.pulseCount}${d.otx.malwareFamily ? ` | malware="${d.otx.malwareFamily}"` : ''}${d.otx.tags.length ? ` | tags=[${d.otx.tags.slice(0,6).join(', ')}]` : ''}`
-    )
-    return lines.join('\n')
-  }).join('\n')
+    if (!d) return { ip, verdict: 'UNAVAILABLE', signals: [], modifier: 0, blockAllowed: false }
+
+    const signals = []
+    let threatScore = 0
+    let blockAllowed = false
+
+    // ── AbuseIPDB ─────────────────────────────────────────────────────────────
+    if (d.abuseipdb) {
+      const score = d.abuseipdb.score
+      if (d.abuseipdb.isTorNode) {
+        signals.push(`CONFIRMED TOR EXIT NODE — anonymization active, attacker concealing origin`)
+        threatScore += 40
+        blockAllowed = true
+      }
+      if (score >= 80) {
+        signals.push(`AbuseIPDB CONFIRMED MALICIOUS: ${score}/100 (${d.abuseipdb.totalReports} reports) via "${d.abuseipdb.isp}" AS`)
+        threatScore += 35
+        blockAllowed = true
+      } else if (score >= 40) {
+        signals.push(`AbuseIPDB SUSPICIOUS: ${score}/100 — do not lower severity based on this alone`)
+        threatScore += 15
+      } else if (score === 0 && d.abuseipdb.totalReports === 0) {
+        signals.push(`AbuseIPDB CLEAN: score=0, zero reports — residential/commercial ISP "${d.abuseipdb.isp}"`)
+        threatScore -= 5
+      }
+    }
+
+    // ── VirusTotal ────────────────────────────────────────────────────────────
+    if (d.virustotal) {
+      const mal = d.virustotal.malicious
+      const total = d.virustotal.total
+      if (mal >= 10) {
+        signals.push(`VirusTotal CONFIRMED: ${mal}/${total} engines flagged — cross-validated threat`)
+        threatScore += 30
+        blockAllowed = true
+      } else if (mal >= 3) {
+        signals.push(`VirusTotal SUSPICIOUS: ${mal}/${total} engines flagged — corroborating signal`)
+        threatScore += 15
+      } else if (mal === 1) {
+        signals.push(`VirusTotal WEAK SIGNAL: 1/${total} engine flagged — single detection, low weight`)
+        threatScore += 3
+      } else if (mal === 0) {
+        signals.push(`VirusTotal CLEAN: 0/${total} engines — not a known malicious IP`)
+        threatScore -= 3
+      }
+    }
+
+    // ── OTX ──────────────────────────────────────────────────────────────────
+    if (d.otx) {
+      const pulses = d.otx.pulseCount
+      if (d.otx.malwareFamily) {
+        signals.push(`OTX MALWARE CONFIRMED: "${d.otx.malwareFamily}" — ${pulses} threat intelligence pulses`)
+        threatScore += 35
+        blockAllowed = true
+      } else if (pulses > 20) {
+        signals.push(`OTX HIGH ACTIVITY: ${pulses} pulses — known threat actor infrastructure`)
+        threatScore += 25
+        blockAllowed = true
+      } else if (pulses > 5) {
+        signals.push(`OTX MODERATE: ${pulses} pulses — suspicious but no malware family confirmed`)
+        threatScore += 10
+      } else if (pulses > 0) {
+        signals.push(`OTX LOW: ${pulses} pulses — weak signal, mixed context`)
+        threatScore += 3
+      } else {
+        signals.push(`OTX CLEAN: 0 pulses — not in any known threat intelligence feed`)
+        threatScore -= 3
+      }
+    }
+
+    // ── Consensus Verdict ─────────────────────────────────────────────────────
+    let verdict
+    let modifier
+    if (threatScore >= 60) {
+      verdict = 'CONFIRMED_MALICIOUS'
+      modifier = +15
+    } else if (threatScore >= 25) {
+      verdict = 'SUSPICIOUS'
+      modifier = +5
+    } else if (threatScore >= 5) {
+      verdict = 'MIXED_SIGNALS'
+      modifier = -10
+    } else {
+      verdict = 'CLEAN'
+      modifier = -20
+    }
+
+    // Check for conflicting signals (one source high, others clean)
+    const hasConflict = d.abuseipdb && d.virustotal && d.otx &&
+      ((d.abuseipdb.score >= 80 && d.virustotal.malicious === 0 && d.otx.pulseCount === 0) ||
+       (d.abuseipdb.score === 0 && d.virustotal.malicious >= 10) ||
+       (d.abuseipdb.score === 0 && d.otx.pulseCount > 20 && d.virustotal.malicious === 0))
+
+    if (hasConflict) {
+      signals.push(`CONFLICTING SOURCES: sources disagree — treat as SUSPICIOUS, do not escalate to CRITICAL on enrichment alone`)
+      modifier = -5
+    }
+
+    return {
+      ip,
+      verdict,
+      signals,
+      modifier,
+      blockAllowed,
+      threatScore,
+      raw: {
+        abuseipdb: d.abuseipdb,
+        virustotal: d.virustotal,
+        otx: d.otx,
+      }
+    }
+  })
+
+  const dominantVerdict = ipJudgments.reduce((acc, j) => {
+    const order = ['CONFIRMED_MALICIOUS', 'SUSPICIOUS', 'MIXED_SIGNALS', 'CLEAN', 'UNAVAILABLE']
+    return order.indexOf(j.verdict) < order.indexOf(acc) ? j.verdict : acc
+  }, 'UNAVAILABLE')
+
+  const blockAllowed = ipJudgments.some(j => j.blockAllowed)
+  const totalModifier = ipJudgments.reduce((sum, j) => sum + j.modifier, 0)
+
+  const summaryLines = ipJudgments.map(j => {
+    return [
+      `IP ${j.ip} — VERDICT: ${j.verdict} (threat score: ${j.threatScore})`,
+      ...j.signals.map(s => `  • ${s}`)
+    ].join('\n')
+  })
+
+  return {
+    summary: summaryLines.join('\n\n'),
+    judgment: dominantVerdict,
+    blockRecommendationAllowed: blockAllowed,
+    confidenceModifier: Math.max(-25, Math.min(+20, totalModifier)),
+    ipJudgments,
+  }
 }
 
 // ── SYSTEM PROMPT ─────────────────────────────────────────────────────────────
-const SYSTEM_PROMPT = `You are ARBITER — a precision detection engineering triage engine. You analyze raw security alerts with threat enrichment data and return structured, accurate incident triage reports.
+const SYSTEM_PROMPT = `You are ARBITER — a senior detection engineering triage engine. You reason in two steps: enumerate technical facts, then judge. You never skip to judgment without enumeration.
 
-═══ WINDOWS EVENT ID → MITRE TECHNIQUE MAPPING ═══
+═══ ABSOLUTE OUTPUT RULES ═══
+1. "tactic" and "mitre_tactic" MUST be identical strings — copy one from the other.
+2. "classification" MUST be a human-readable technique name. NEVER put a MITRE ID (T1xxx) in classification.
+3. "mitre_id" MUST be the most specific subtechnique: T1003.003 not T1003. T1021.002 not T1021.
+4. NEVER recommend blocking an RFC 1918 address (10.x, 172.16-31.x, 192.168.x).
+5. NEVER suggest commands that destroy evidence (wevtutil clear-log, del *.evtx, Clear-EventLog).
+6. PROCESS EVERY EVENT IN THE ALERT. If the alert contains multiple EventCodes, you must enumerate all of them in Step 1 and let the highest-severity event drive the final verdict.
 
-4625 (Failed Logon):
-  - %%2313 = Wrong password. Account EXISTS and is ACTIVE. Highest signal for brute force.
-  - %%2304 = Account restrictions. Lockout evasion likely.
-  - %%2310 = Account locked out by prior brute force.
-  - Count >5 + same username + external IP = T1110.001 Password Guessing
-  - Count >5 + multiple usernames + same IP = T1110.003 Password Spraying
-  - LogonType 3 = Network. LogonType 10 = RDP. LogonType 2 = Interactive.
-  - IMPORTANT: lsass.exe as ProcessName on 4625 is NORMAL behavior. Do NOT map to T1003.
+═══ STEP 1 — MANDATORY FACT ENUMERATION ═══
+Before classifying, populate the "indicators" field with these facts in order:
+1. List every distinct EventCode present in this alert and what each represents mechanically.
+2. For each process execution event: what binary, what arguments, is this canonical or anomalous use?
+3. What is the parent-child process relationship? Is spawning winword→mshta, excel→powershell, etc. suspicious?
+4. Are there multiple assets in this alert? List each one — first asset, second asset, destination asset.
+5. What are the timestamps? Calculate time gaps between events. Events within 5 minutes = coordinated chain.
+6. What does the enrichment verdict say?
+7. Is there a SEQUENCE here — initial compromise → persistence → lateral movement?
 
-4624 (Successful Logon):
-  - Follows multiple 4625 events = T1110.001 succeeded → escalate to CRITICAL immediately
-  - Anomalous hours + external IP = T1078 Valid Accounts
-  - LogonType 3 + NTLM auth = consider T1550.002 Pass the Hash
+═══ MULTI-EVENT CHAIN DETECTION ═══
+When an alert contains multiple EventCodes, apply these escalation rules:
 
-4648 (Explicit Credential Logon):
-  - Non-interactive context = T1550.002 or T1078
+SEQUENCE PATTERNS — escalate to CRITICAL if ANY of these chains appear:
+  - 4688 (process/LOLBin) → 4698 (scheduled task) = execution + persistence chain → CRITICAL
+  - 4688 (LOLBin) → 4624 (successful logon on different asset) = execution + lateral movement → CRITICAL
+  - 4698 (scheduled task) → 4624 (different WorkstationName) = persistence + lateral movement → CRITICAL
+  - ANY three events within 10 minutes spanning two different assets = CRITICAL
+  - 4688 (anomalous) + 4698 (malicious TaskContent) + 4624 = full kill chain → CRITICAL, confidence ≥ 95
 
-4688 / Sysmon Event 1 (Process Created):
-  - cmd.exe, powershell.exe, wscript.exe, cscript.exe = T1059 subtechniques
-  - certutil.exe -decode or -urlcache = T1140 or T1105 Ingress Tool Transfer
-  - regsvr32.exe + remote URL = T1218.010 Signed Binary Proxy Execution
-  - mshta.exe + .hta or URL = T1218.005
-  - rundll32.exe + suspicious DLL path = T1218.011
-  - schtasks.exe /create = T1053.005
-  - net.exe user /add or localgroup = T1136.001 or T1098
-  - whoami, ipconfig, net view, nltest = T1082 / T1016 Discovery
-  - Encoded PowerShell (-enc, -encodedCommand, IEX) = T1059.001 + T1027
-  - PsExec, WMI, DCOM lateral tool use = T1021 subtechniques
+TIME GAP ANALYSIS:
+  - Events within 2 minutes of each other = automated/scripted attack, raise confidence by 15
+  - Events spanning different WorkstationNames = lateral movement confirmed
+  - If EventCode 4624 appears with a DIFFERENT WorkstationName than 4688/4698 events = lateral movement in progress
 
-4698 / 4702 (Scheduled Task):
-  - T1053.005 Scheduled Task/Job
+AFFECTED ASSET in multi-event alerts:
+  - Use the FIRST compromised asset as affected_asset
+  - Note the lateral movement destination in reasoning ("attacker moved to CORP-SRV-12 at 23:51")
+  - NEVER ignore a 4624 that appears after a 4688/4698 sequence on a different host
 
-4720 / 4722 (Account Created/Enabled):
-  - T1136.001 Create Local Account
+PARENT PROCESS ANOMALIES (always CRITICAL or HIGH):
+  - winword.exe / excel.exe / powerpnt.exe spawning any shell or LOLBin = macro dropper, CRITICAL
+  - outlook.exe spawning any process = phishing delivery, CRITICAL
+  - browser spawning mshta/wscript/cscript = drive-by download, HIGH
+  - explorer.exe spawning encoded powershell = user-executed payload, HIGH
 
-4732 / 4728 (Group Membership Changed):
-  - T1098 Account Manipulation
+═══ LOLBIN BEHAVIORAL MATRIX ═══
 
-4776 (NTLM Credential Validation):
-  - Lateral movement context = T1550.002
+mshta.exe:
+  CANONICAL: launching .HTA applications from local disk
+  ANOMALOUS: executing remote HTTP/HTTPS URL, inline script, spawning cmd/powershell
+  If spawned from Office app + remote URL: CRITICAL (macro dropper confirmed)
+  If remote URL but unknown parent: HIGH minimum
 
-4697 / 7045 (Service Installed):
-  - T1543.003 Windows Service
+certutil.exe:
+  CANONICAL: certificate store management, Base64 encode/decode of certificates
+  ANOMALOUS: -urlcache, -split, -f with remote URL, any .exe/.dll/.ps1 output path
+  ANOMALOUS output paths: C:\Users\Public\, C:\Windows\Temp\, C:\ProgramData\
+  MINIMUM HIGH regardless of enrichment
 
-4663 / 4656 (Object Access):
-  - Target: SAM, NTDS.dit, lsass memory = T1003 OS Credential Dumping
-  - High file count + short window = T1005 Data from Local System
+regsvr32.exe:
+  CANONICAL: COM DLL registration from System32 or Program Files
+  ANOMALOUS: /i: with HTTP/HTTPS URL, .sct files, scrobj.dll with remote path
+  T1218.010 — MINIMUM HIGH
 
-1102 / 4719 (Audit Log Cleared):
-  - T1070.001 Clear Windows Event Logs
-  - ALWAYS HIGH severity minimum. Indicates attacker covering tracks.
+powershell.exe:
+  CANONICAL: administrative scripting
+  ANOMALOUS: -enc/-encodedCommand (always flag), IEX+DownloadString (CRITICAL), Invoke-Mimikatz (CRITICAL), -WindowStyle Hidden + network = HIGH
 
-4104 (PowerShell Script Block Logging):
-  - Invoke-Mimikatz, Invoke-BloodHound, Empire, Cobalt Strike artifacts = T1059.001 CRITICAL
-  - Download cradles (IEX, WebClient, DownloadString) = T1059.001 + T1105
+rundll32.exe / wscript.exe / cscript.exe:
+  ANOMALOUS: executing from Temp/Public/AppData, loading remote content, spawning shells
+  MINIMUM HIGH
 
-Sysmon 3 (Network Connection):
-  - System process + outbound to non-standard port = T1071 Application Layer Protocol
-  - Regular interval connections = T1071 + note potential C2 beaconing pattern
+GREY ZONE RULE:
+  LOLBin used anomalously + clean IP enrichment: MEDIUM minimum, note "behavioral anomaly primary signal, clean enrichment does not excuse anomalous use"
 
-═══ SEVERITY DETERMINATION RULES ═══
+═══ EVENT ID → MITRE MAPPING ═══
 
-CRITICAL — escalate immediately if ANY of:
-  - Successful logon (4624) following brute force pattern (prior 4625 sequence)
-  - Domain Controller targeted (DC, -DC-, CORP-DC, PDC, BDC in hostname)
-  - Direct access to NTDS.dit, SAM, or LSASS process memory
-  - Audit log cleared (anti-forensics, attacker has established access)
-  - Known ransomware indicators: shadow copy deletion, vssadmin, wbadmin, mass encryption
-  - OTX malware family identified
-  - Lateral movement + privilege escalation in same alert context
-  - Data staged for or in active exfiltration to external IP
+4625 (Failed Logon) → "Credential Access"
+  Count ≤ 3 + internal IP = LOW (user error)
+  Count > 5 + same username + external IP = T1110.001
+  Count > 5 + rotating usernames = T1110.003
+  Count > 20 + DC = CRITICAL
 
-HIGH — immediate investigation required if ANY of:
-  - Service/backup accounts targeted (svc_, backup_, _svc, sa_, admin_)
-  - Source confirmed as Tor node (isTorNode=true) or bulletproof hosting ASN
-  - AbuseIPDB score ≥ 80
-  - OTX pulses > 5
-  - Persistence mechanism established (scheduled task, service, registry run key)
-  - Encoded/obfuscated command execution
-  - Lateral movement to non-DC target
-  - Multiple failed logons against privileged account from external source
+4624 (Successful Logon) → "Initial Access" or "Lateral Movement"
+  After brute force sequence = CRITICAL
+  Different WorkstationName than prior events in same alert = T1021 Lateral Movement
+  External IP + NTLM = T1078
 
-MEDIUM — investigate within shift if ANY of:
-  - AbuseIPDB score 40–79
-  - Single failed logon from external IP, clean enrichment
-  - Discovery phase commands (whoami, ipconfig, net view) in isolation
-  - Suspicious child process from legitimate parent, first occurrence
-  - OTX pulses 1–5
+4688 (Process Created) → tactic from LOLBin matrix above
+  Office app as parent → LOLBin = T1566 Phishing + technique
+  PsExec/PSEXESVC = T1021.002
+  Plaintext password in CommandLine = CRITICAL always
 
-LOW — log and monitor:
-  - Clean enrichment across all three sources
-  - Single event, no repetition, known benign explanation plausible
-  - Policy violation without malicious indicators
+4663 / 4656 (Object Access) → "Credential Access"
+  ntds.dit = T1003.003, SAM = T1003.002, lsass = T1003.001
 
-═══ ENRICHMENT WEIGHTING ═══
-AbuseIPDB ≥ 80: confirmed malicious source. Always state the score. Raise severity one level if not already CRITICAL.
-AbuseIPDB ≥ 40: suspicious. Do not lower severity.
-isTorNode = true: anonymization active. Attacker concealing origin. Always note this.
-VirusTotal malicious > 0: cross-validated threat. Cite the detection count and engine total.
-OTX pulses > 0: known threat actor infrastructure. State pulse count. Name malware family if present.
-All three sources confirm threat: confidence ≥ 90.
-All three sources clean: consider benign explanation. Reduce confidence to 50–65.
+4698 / 4702 (Scheduled Task) → "Persistence", ALWAYS T1053.005
+  EventCode 4698 = T1053.005 regardless of TaskContent payload
+  TaskContent with IEX/DownloadString/-enc/certutil = CRITICAL
+  TaskContent with defrag/sfc/cleanmgr + admin user + business hours = LOW
 
-═══ ASSET CRITICALITY RULES ═══
-asset_is_critical = true:
-  - Domain Controllers: hostname contains DC, -DC-, PDC, BDC, CORP-DC
-  - Backup systems: backup, bkp, veeam, commvault in hostname or username
-  - Database servers: SQL, DB, oracle, postgres, mysql in hostname
-  - Targets: NTDS.dit, SAM database, krbtgt account
+4720 + 4732 → "Persistence", T1136.001 + T1098
+  Username contains backdoor/hack/persist/0day = CRITICAL
 
-═══ RECOMMENDATION STANDARDS ═══
-Each of the 5 recommendations must:
-  1. Reference a specific indicator from this alert (the actual IP, username, hostname, event code)
-  2. Be executable by a Tier 1–2 analyst right now without further context
-  3. Be ordered: containment first → investigation second → validation third → hardening last
-  4. Never be generic ("monitor the system", "review permissions" = REJECTED)
-  5. Each under 120 characters
+4697 / 7045 → "Persistence", T1543.003
+  ServiceFileName in Temp/Users/ProgramData = CRITICAL
+  ServiceName mimics legitimate service = add T1036 masquerading note
+
+1102 / 4719 → "Defense Evasion", T1070.001
+  On DC = CRITICAL. Elsewhere = HIGH minimum.
+
+4104 → varies by content
+  Invoke-Mimikatz/BloodHound = "Credential Access", CRITICAL
+  IEX + remote URL = "Execution", CRITICAL
+
+═══ SEVERITY RULES ═══
+
+CRITICAL — any one sufficient:
+  Multi-event chain spanning two assets (see chain detection above)
+  Office app spawning LOLBin with remote URL
+  DC targeted
+  ntds.dit/SAM/lsass accessed
+  Audit log cleared
+  Plaintext credentials in CommandLine
+  OTX malware family confirmed
+  Scheduled task with download cradle
+
+HIGH — any one sufficient:
+  Single LOLBin anomalous use without chain
+  Service account targeted
+  Confirmed Tor node
+  AbuseIPDB ≥ 80
+  Binary executed from Temp/Public/AppData
+  Encoded PowerShell
+
+MEDIUM:
+  External IP + single event + mixed enrichment
+  Discovery commands in isolation
+  LOLBin + clean enrichment (grey zone)
+
+LOW:
+  Count ≤ 3 + internal IP + standard user + no other indicators
+  Known maintenance binary + admin + business hours
+
+═══ ENRICHMENT JUDGMENT FRAMEWORK ═══
+Read the pre-computed VERDICT field:
+  CONFIRMED_MALICIOUS → may recommend IP block, raise severity
+  SUSPICIOUS → corroborating signal, do not auto-escalate
+  MIXED_SIGNALS → note conflict, do not escalate on enrichment alone
+  CLEAN → consider benign explanation, reduce confidence 15-20 pts
+  NO_IP → never recommend IP blocking, focus on host/account actions
+
+Apply the confidenceModifier: base confidence ± modifier = final confidence.
+When blockRecommendationAllowed = false: ZERO IP blocking recommendations.
+
+═══ ASSET CRITICALITY ═══
+TRUE: DC/-DC-/PDC/BDC/ADC, SQL/DB/ORA, BACKUP/BKP/VEEAM, EXCHANGE/MAIL, or ntds.dit/SAM/krbtgt targeted.
+FALSE: WKS/LAPTOP/DESKTOP/PC/SRV alone.
+
+═══ RECOMMENDATION ENFORCEMENT ═══
+
+HARD RULES:
+1. Never block RFC 1918 addresses.
+2. Never suggest evidence-destroying commands.
+3. Every recommendation must name a specific indicator (IP, username, hostname, command, taskname).
+4. Starting a recommendation with ONLY "Investigate", "Review", "Monitor", "Check", "Verify", or "Contain" is REJECTED unless followed immediately by a specific executable action.
+5. Order: CONTAIN → INVESTIGATE → VALIDATE → HARDEN → DOCUMENT.
+6. For multi-event alerts: at least one recommendation must address EACH compromised asset.
+
+MANDATORY COMMAND FORMATS — you MUST use these exact patterns with real values substituted:
+
+Account actions:
+  "Run: net user [USERNAME] /domain /active:no — disable [USERNAME] pending investigation"
+  "Run: net user [USERNAME] /delete — remove unauthorized account created by [CREATOR]"
+  "Run: net localgroup Administrators [USERNAME] /delete — remove from admin group"
+
+Service/task actions:
+  "Run: schtasks /delete /tn '[TASKNAME]' /f on [HOSTNAME] — remove malicious persistence"
+  "Run: sc stop [SERVICENAME] && sc delete [SERVICENAME] on [HOSTNAME]"
+
+Investigation:
+  "Run: Get-WinEvent -FilterHashtable @{LogName='Security'; Id=[ID]} -ComputerName [HOST] | Select -First 50"
+  "Run: schtasks /query /fo LIST /v on [HOST] — audit all scheduled tasks"
+
+Network:
+  "Block [IP]/32 at perimeter firewall — AbuseIPDB [SCORE]/100, [REPORTS] reports"
+  "Isolate [HOSTNAME] from network — active compromise, lateral movement to [DEST_HOST] detected"
+
+Forensic:
+  "Collect memory image from [HOSTNAME] before shutdown — volatile evidence preservation"
+  "Run: Get-WinEvent -FilterHashtable @{LogName='Security'; Id=4624} -ComputerName [DEST_HOST] | Where {$_.TimeCreated -gt '[TIMESTAMP]'}"
 
 ═══ REASONING STANDARDS ═══
-Write exactly as a senior SOC analyst writes an escalation case note.
-- 2–4 sentences maximum
-- Every sentence must reference a specific, named indicator from the alert or enrichment
-- State conclusions directly. "This is consistent with X" not "This could indicate X"
-- The final sentence must state the single most important action or risk
-- Reference event IDs, failure reason codes, IP scores, pulse counts, asset type, count and frequency
+4 sentences exactly:
+  1. What technique was used and which binary/account/event code
+  2. What the enrichment verdict says, or what behavioral indicators drive severity without enrichment
+  3. What specific rule or chain triggered the severity level (name the rule)
+  4. The single most urgent action right now with the specific hostname or account
 
-═══ OUTPUT ═══
-A single valid JSON object. No markdown. No backticks. No preamble. No explanation after. Exactly these fields:
+═══ OUTPUT SCHEMA ═══
+Single valid JSON object. No markdown, no backticks, no preamble, no text after closing brace.
+
 {
-  "classification": string,
-  "tactic": string,
+  "indicators": string[] (3–8 items — enumerate ALL EventCodes present, process chain, assets, time gaps, enrichment),
+  "classification": string (descriptive name only, NEVER a MITRE ID),
+  "tactic": string (MUST equal mitre_tactic exactly),
   "severity": "CRITICAL" | "HIGH" | "MEDIUM" | "LOW",
-  "confidence": number 0–100,
-  "mitre_id": string,
+  "confidence": number (base ± enrichment modifier),
+  "mitre_id": string (most specific subtechnique),
   "mitre_name": string,
-  "mitre_tactic": string,
-  "affected_asset": string,
+  "mitre_tactic": string (MUST equal tactic exactly),
+  "affected_asset": string (first compromised asset),
   "asset_is_critical": boolean,
-  "recommendations": string[] (exactly 5 items, each under 120 characters),
-  "reasoning": string (2–4 sentences, dense with specific named indicators),
-  "evidence": string[] (exactly 3–6 items, formatted as "FIELD=VALUE")
+  "recommendations": string[] (exactly 5 — each must contain an executable command or specific named action, generic openers alone are REJECTED),
+  "recommendation_provenance": string[] (exactly 5 — each one of: "enrichment_confirmed" | "behavioral_heuristic" | "account_action" | "forensic" | "known_good_override"),
+  Provenance guide: "enrichment_confirmed" = recommendation driven by AbuseIPDB/VT/OTX data. "behavioral_heuristic" = driven by LOLBin matrix or process chain. "account_action" = disabling/deleting an account. "forensic" = log query or evidence collection. "known_good_override" = ONLY use when recommending NO action because pattern is benign.
+  "reasoning": string (exactly 4 sentences per the standards above),
+  "evidence": string[] (3–6 raw FIELD=VALUE pairs from the alert that drove the verdict)
 }`
 
 // ── STREAMING ROUTE HANDLER ───────────────────────────────────────────────────
@@ -313,7 +523,7 @@ export async function POST(request) {
         // ── PHASE 2: LLM TRIAGE WITH FULL ENRICHMENT CONTEXT ────────────────
         send(controller, 'status', { phase: 'analyzing', message: 'ARBITER is analyzing your alert...' })
 
-        const enrichmentSummary = buildEnrichmentSummary(enrichment, ips)
+        const enrichmentJudgment = buildEnrichmentJudgment(enrichment, ips)
         const parsedContext = Object.entries(parsedAlert)
           .filter(([_, v]) => v !== null)
           .map(([k, v]) => `${k}: ${v}`)
@@ -322,7 +532,7 @@ export async function POST(request) {
         const groqStream = await groq.chat.completions.create({
           model: 'llama-3.3-70b-versatile',
           temperature: 0.1,
-          max_tokens: 2000,
+          max_tokens: 3000,
           stream: false,
           messages: [
             { role: 'system', content: SYSTEM_PROMPT },
@@ -336,10 +546,13 @@ ${truncatedAlert}
 PRE-PARSED FIELDS:
 ${parsedContext || 'No structured fields extracted'}
 
-THREAT ENRICHMENT:
-${enrichmentSummary}
+ENRICHMENT JUDGMENT:
+${enrichmentJudgment.summary}
+VERDICT: ${enrichmentJudgment.judgment}
+blockRecommendationAllowed: ${enrichmentJudgment.blockRecommendationAllowed}
+confidenceModifier: ${enrichmentJudgment.confidenceModifier > 0 ? '+' : ''}${enrichmentJudgment.confidenceModifier}
 
-Analyze this alert. Apply the MITRE mapping rules precisely. Weight the enrichment data. Return only the JSON triage object.`
+Analyze this alert. Enumerate technical facts first. Apply MITRE mapping rules precisely. Return only the JSON triage object.`
             }
           ]
         })
@@ -357,7 +570,7 @@ Analyze this alert. Apply the MITRE mapping rules precisely. Weight the enrichme
           throw new Error('Failed to parse model JSON output')
         }
 
-        const required = ['classification','tactic','severity','confidence','mitre_id','mitre_name','mitre_tactic','affected_asset','asset_is_critical','recommendations','reasoning']
+        const required = ['indicators','classification','tactic','severity','confidence','mitre_id','mitre_name','mitre_tactic','affected_asset','asset_is_critical','recommendations','reasoning']
         const missing = required.filter(f => !(f in triage))
         if (missing.length) throw new Error(`Model response missing fields: ${missing.join(', ')}`)
 

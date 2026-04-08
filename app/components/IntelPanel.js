@@ -11,13 +11,15 @@ function ScoreBar({ value, max = 100, color = 'red' }) {
   )
 }
 
-export default function IntelPanel({ result, collapsed, onToggle }) {
+export default function IntelPanel({ result, collapsed, onToggle, indicatorCache }) {
   const { enrichment, ips } = result ?? {}
   const primaryIP = ips?.[0] ?? null
   const intel     = primaryIP ? enrichment?.[primaryIP] : null
   const abuse     = intel?.abuseipdb ?? null
   const vt        = intel?.virustotal ?? null
   const otx       = intel?.otx ?? null
+
+  const cached = primaryIP ? indicatorCache?.[primaryIP] : null
 
   return (
     <div className={`arb-panel arb-intel${collapsed ? ' arb-panel-collapsed' : ''}`}>
@@ -57,6 +59,31 @@ export default function IntelPanel({ result, collapsed, onToggle }) {
             <div className="arb-section">
               <div className="arb-card-label">Source IP</div>
               <div className="arb-ip-address">{primaryIP}</div>
+
+              {/* INDICATOR CACHE BADGE */}
+              {cached && cached.seenCount > 1 && (
+                <div style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                  marginTop: '6px',
+                  background: 'rgba(245,158,11,0.15)',
+                  border: '0.5px solid var(--amber-40)',
+                  borderRadius: '3px',
+                  padding: '3px 8px',
+                }}>
+                  <div style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'var(--amber)' }} />
+                  <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '8px', color: 'var(--amber)', letterSpacing: '0.1em' }}>
+                    SEEN {cached.seenCount}× THIS SESSION
+                  </span>
+                </div>
+              )}
+              {cached && cached.seenCount > 1 && (
+                <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '8px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                  LAST: {cached.lastClassification}
+                </div>
+              )}
+
               {abuse && (
                 <div className="arb-meta-list">
                   <div className="arb-meta-row"><span className="arb-mk">COUNTRY</span><span className="arb-mv">{abuse.country ?? '—'}</span></div>

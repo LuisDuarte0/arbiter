@@ -9,21 +9,26 @@ function timeAgo(date) {
   return `${Math.floor(m / 60)}h ago`
 }
 
-export default function AlertQueue({ history, activeId, collapsed, onToggle, onSelect }) {
+export default function AlertQueue({ history, activeId, collapsed, onToggle, onSelect, mitreFilter, onMitreFilter }) {
   const [query, setQuery] = useState('')
 
-  const filtered = query.trim()
-    ? history.filter(item => {
-        const q = query.toLowerCase()
-        return (
-          item.classification?.toLowerCase().includes(q) ||
-          item.asset?.toLowerCase().includes(q) ||
-          item.tactic?.toLowerCase().includes(q) ||
-          item.severity?.toLowerCase().includes(q) ||
-          item.id?.toLowerCase().includes(q)
-        )
-      })
-    : history
+  const filtered = (() => {
+    let items = history
+    if (mitreFilter) {
+      items = items.filter(item => item.fullResult?.triage?.mitre_id?.startsWith(mitreFilter))
+    }
+    if (query.trim()) {
+      const q = query.toLowerCase()
+      items = items.filter(item =>
+        item.classification?.toLowerCase().includes(q) ||
+        item.asset?.toLowerCase().includes(q) ||
+        item.tactic?.toLowerCase().includes(q) ||
+        item.severity?.toLowerCase().includes(q) ||
+        item.id?.toLowerCase().includes(q)
+      )
+    }
+    return items
+  })()
 
   return (
     <div className={`arb-panel arb-queue${collapsed ? ' arb-panel-collapsed' : ''}`}>
@@ -39,7 +44,28 @@ export default function AlertQueue({ history, activeId, collapsed, onToggle, onS
 
       <div className="arb-panel-content">
 
-        {/* SEARCH */}
+        {mitreFilter && (
+          <div style={{
+            padding: '5px 12px',
+            borderBottom: '0.5px solid var(--border)',
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+            background: 'var(--amber-15)',
+            flexShrink: 0,
+          }}>
+            <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '9px', color: 'var(--amber)', letterSpacing: '0.08em' }}>
+              FILTER: {mitreFilter}
+            </span>
+            <span
+              onClick={() => onMitreFilter?.(null)}
+              style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '9px', color: 'var(--text-muted)', cursor: 'pointer', letterSpacing: '0.08em' }}
+            >
+              ✕ CLEAR
+            </span>
+          </div>
+        )}
+
         {history.length > 0 && (
           <div style={{ padding:'8px 12px', borderBottom:'0.5px solid var(--border)', flexShrink:0 }}>
             <input
@@ -62,7 +88,7 @@ export default function AlertQueue({ history, activeId, collapsed, onToggle, onS
           </div>
         )}
 
-        {activeId && !query && (
+        {activeId && !query && !mitreFilter && (
           <div className="arb-queue-item arb-queue-active">
             <div className="arb-queue-top">
               <span className="arb-queue-id">{activeId.slice(4, 17)}</span>
@@ -81,8 +107,10 @@ export default function AlertQueue({ history, activeId, collapsed, onToggle, onS
           </div>
         )}
 
-        {query && filtered.length === 0 && (
-          <div className="arb-queue-empty">No results for "{query}"</div>
+        {(query || mitreFilter) && filtered.length === 0 && (
+          <div className="arb-queue-empty">
+            {mitreFilter ? `No results for ${mitreFilter}` : `No results for "${query}"`}
+          </div>
         )}
 
         {filtered.map(item => (
@@ -102,7 +130,9 @@ export default function AlertQueue({ history, activeId, collapsed, onToggle, onS
 
         {history.length > 0 && (
           <div className="arb-queue-footer">
-            {query
+            {mitreFilter
+              ? `${filtered.length} of ${history.length} · ${mitreFilter}`
+              : query
               ? `${filtered.length} of ${history.length} shown`
               : `${history.length} ${history.length === 1 ? 'analysis' : 'analyses'} this session`
             }

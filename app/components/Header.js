@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react'
 import AuditLog from './AuditLog'
 
-export default function Header({ activeId, result, onReset }) {
+export default function Header({ activeId, result, onReset, onMitreFilter }) {
   const [auditOpen, setAuditOpen] = useState(false)
   const [auditCount, setAuditCount] = useState(0)
 
@@ -81,7 +81,7 @@ export default function Header({ activeId, result, onReset }) {
           </div>
         </div>
       </header>
-      {auditOpen && <AuditLog onClose={() => setAuditOpen(false)} />}
+      {auditOpen && <AuditLog onClose={() => setAuditOpen(false)} onMitreFilter={onMitreFilter} />}
     </>
   )
 }

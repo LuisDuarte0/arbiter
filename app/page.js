@@ -15,6 +15,8 @@ export default function Home() {
   const [history, setHistory]               = useState([])
   const [queueCollapsed, setQueueCollapsed] = useState(false)
   const [intelCollapsed, setIntelCollapsed] = useState(false)
+  const [mitreFilter, setMitreFilter]       = useState(null)
+  const [indicatorCache, setIndicatorCache] = useState({})
 
   // Partial state — intel panel populates as soon as enrichment streams in
   const [streamedEnrichment, setStreamedEnrichment] = useState(null)
@@ -108,6 +110,22 @@ export default function Home() {
           if (event === 'triage') {
             const data = payload
             setResult(data)
+            if (data.ips?.length) {
+  setIndicatorCache(prev => {
+    const updated = { ...prev }
+    data.ips.forEach(ip => {
+      if (data.enrichment?.[ip]) {
+        updated[ip] = {
+          ...data.enrichment[ip],
+          firstSeen: prev[ip]?.firstSeen ?? new Date().toISOString(),
+          seenCount: (prev[ip]?.seenCount ?? 0) + 1,
+          lastClassification: data.triage.classification,
+        }
+      }
+    })
+    return updated
+  })
+}
             setStreamedEnrichment(null) // result now has full enrichment
             setStreamedIPs([])
 
@@ -176,15 +194,17 @@ export default function Home() {
 
   return (
     <div className="arb-layout">
-      <Header activeId={activeId} result={result} onReset={handleReset} />
+      <Header activeId={activeId} result={result} onReset={handleReset} onMitreFilter={setMitreFilter} />
       <main className={mainClass}>
         <AlertQueue
-          history={history}
-          activeId={loading ? activeId : null}
-          collapsed={queueCollapsed}
-          onToggle={() => setQueueCollapsed(p => !p)}
-          onSelect={handleSelectHistory}
-        />
+  history={history}
+  activeId={loading ? activeId : null}
+  collapsed={queueCollapsed}
+  onToggle={() => setQueueCollapsed(p => !p)}
+  onSelect={handleSelectHistory}
+  mitreFilter={mitreFilter}
+  onMitreFilter={setMitreFilter}
+/>
         <AnalysisPanel
           alertText={alertText}
           setAlertText={setAlertText}
@@ -196,10 +216,11 @@ export default function Home() {
           onReset={handleReset}
         />
         <IntelPanel
-          result={intelResult}
-          collapsed={intelCollapsed}
-          onToggle={() => setIntelCollapsed(p => !p)}
-        />
+  result={intelResult}
+  collapsed={intelCollapsed}
+  onToggle={() => setIntelCollapsed(p => !p)}
+  indicatorCache={indicatorCache}
+/>
       </main>
     </div>
   )

@@ -316,6 +316,20 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
         </div>
       )}
 
+      {!result && !loading && (
+        <div style={{ padding: '40px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', opacity: 0.5 }}>
+          <svg viewBox="-8 0 136 120" width="28" height="25" xmlns="http://www.w3.org/2000/svg">
+            <line x1="60" y1="8" x2="6" y2="112" stroke="#334055" strokeWidth="17" strokeLinecap="square"/>
+            <line x1="60" y1="8" x2="114" y2="112" stroke="#334055" strokeWidth="17" strokeLinecap="square"/>
+            <line x1="-6" y1="68" x2="126" y2="68" stroke="#334055" strokeWidth="7" strokeLinecap="square"/>
+          </svg>
+          <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '0.15em', textAlign: 'center', lineHeight: '1.8' }}>
+            READY FOR TRIAGE<br/>
+            <span style={{ fontSize: '8px', opacity: 0.6 }}>PASTE AN ALERT AND CLICK ANALYZE</span>
+          </div>
+        </div>
+      )}
+
       {triage && (
         <div>
 

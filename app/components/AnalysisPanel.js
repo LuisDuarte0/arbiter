@@ -11,38 +11,38 @@ function DecisionSignals({ triage, result }) {
   const signals = []
 
   if (result?.meta?.correlated)
-    signals.push({ label: 'REDIS: REPEAT', color: '#E57373', bg: 'rgba(229,115,115,0.12)' })
+    signals.push({ label: 'REDIS: REPEAT', color: '#E57373', bg: 'rgba(229,115,115,0.12)', icon: '↺' })
   if (result?.meta?.activeCampaign)
-    signals.push({ label: 'CAMPAIGN ACTIVE', color: '#E57373', bg: 'rgba(229,115,115,0.18)' })
+    signals.push({ label: 'CAMPAIGN ACTIVE', color: '#E57373', bg: 'rgba(229,115,115,0.18)', icon: '🔥' })
 
   const enrichment = result?.enrichment
   const ips = result?.ips ?? []
   if (ips.length > 0) {
     const ip = enrichment?.[ips[0]]
     if (ip?.abuseipdb?.score >= 80)
-      signals.push({ label: 'INTEL: MALICIOUS', color: 'var(--red)', bg: 'rgba(239,68,68,0.12)' })
+      signals.push({ label: 'INTEL: MALICIOUS', color: 'var(--red)', bg: 'rgba(239,68,68,0.12)', icon: '⚑' })
     else if (ip?.abuseipdb?.score >= 40)
-      signals.push({ label: 'INTEL: SUSPICIOUS', color: '#F59E0B', bg: 'rgba(245,158,11,0.12)' })
+      signals.push({ label: 'INTEL: SUSPICIOUS', color: '#F59E0B', bg: 'rgba(245,158,11,0.12)', icon: '⚑' })
     else if (ips.length > 0)
-      signals.push({ label: 'INTEL: CLEAN', color: 'var(--text-muted)', bg: 'transparent' })
+      signals.push({ label: 'INTEL: CLEAN', color: 'var(--text-muted)', bg: 'transparent', icon: '✓' })
     if (ip?.abuseipdb?.isTorNode)
-      signals.push({ label: 'TOR: CONFIRMED', color: 'var(--red)', bg: 'rgba(239,68,68,0.1)' })
+      signals.push({ label: 'TOR: CONFIRMED', color: 'var(--red)', bg: 'rgba(239,68,68,0.1)', icon: '⊘' })
   } else {
-    signals.push({ label: 'INTEL: NO IP', color: 'var(--text-muted)', bg: 'transparent' })
+    signals.push({ label: 'INTEL: NO IP', color: 'var(--text-muted)', bg: 'transparent', icon: '—' })
   }
 
   if (triage.asset_is_critical)
-    signals.push({ label: 'ASSET: CRITICAL', color: '#F59E0B', bg: 'rgba(245,158,11,0.1)' })
+    signals.push({ label: 'ASSET: CRITICAL', color: '#F59E0B', bg: 'rgba(245,158,11,0.1)', icon: '▲' })
 
   if (['CRITICAL', 'HIGH'].includes(triage.severity))
-    signals.push({ label: `SEV: ${triage.severity}`, color: triage.severity === 'CRITICAL' ? 'var(--red)' : '#F59E0B', bg: triage.severity === 'CRITICAL' ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.1)' })
+    signals.push({ label: `SEV: ${triage.severity}`, color: triage.severity === 'CRITICAL' ? 'var(--red)' : '#F59E0B', bg: triage.severity === 'CRITICAL' ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.1)', icon: '⚡' })
 
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', padding: '8px 22px', borderBottom: '0.5px solid var(--border)', background: 'rgba(255,255,255,0.01)' }}>
       <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.12em', alignSelf: 'center', marginRight: '4px' }}>DECISION SIGNALS</span>
       {signals.map((s, i) => (
-        <span key={i} style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: s.color, background: s.bg, border: `0.5px solid ${s.color}40`, borderRadius: '2px', padding: '2px 6px', letterSpacing: '0.08em' }}>
-          {s.label}
+        <span key={i} style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', fontWeight: '600', color: s.color, background: s.bg, border: `0.5px solid ${s.color}40`, borderRadius: '2px', padding: '3px 7px', letterSpacing: '0.08em', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+          <span style={{ fontSize: '9px' }}>{s.icon}</span>{s.label}
         </span>
       ))}
     </div>
@@ -229,9 +229,20 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                     </svg>
                   )}
                 </div>
-                {triage.asset_is_critical && (
-                  <span className="arb-asset-critical" style={{ marginTop: '4px', display: 'inline-block' }}>CRITICAL ASSET</span>
-                )}
+                <span style={{
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: '7px',
+                  letterSpacing: '0.1em',
+                  color: triage.asset_is_critical ? '#E57373' : 'var(--text-muted)',
+                  background: triage.asset_is_critical ? 'rgba(229,115,115,0.12)' : 'rgba(255,255,255,0.04)',
+                  border: `0.5px solid ${triage.asset_is_critical ? 'rgba(229,115,115,0.4)' : 'rgba(255,255,255,0.08)'}`,
+                  borderRadius: '2px',
+                  padding: '2px 6px',
+                  marginTop: '5px',
+                  display: 'inline-block',
+                }}>
+                  {triage.asset_is_critical ? '⚠ CRITICAL ASSET' : 'STANDARD ASSET'}
+                </span>
               </div>
               {triage.evidence?.length > 0 && (
                 <>
@@ -244,10 +255,19 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                         const field = eqIdx > -1 ? item.slice(0, eqIdx) : item
                         const val   = eqIdx > -1 ? item.slice(eqIdx + 1) : ''
                         return (
-                          <div key={i} style={S.chip}>
-                            <span>{field}</span>
-                            {val && <><span style={S.chipSep}>=</span><span style={S.chipVal}>{val.length > 20 ? val.slice(0, 20) + '…' : val}</span></>}
-                          </div>
+                          (() => {
+                            const isIP = /^\d{1,3}(\.\d{1,3}){3}$/.test(val) || field.toLowerCase().includes('ip') || field.toLowerCase().includes('address')
+                            const isUser = field.toLowerCase().includes('user') || field.toLowerCase().includes('subject') || field.toLowerCase().includes('target')
+                            const chipColor = isIP ? '#64B5F6' : isUser ? '#CE93D8' : 'var(--amber)'
+                            const chipBg = isIP ? 'rgba(100,181,246,0.1)' : isUser ? 'rgba(206,147,216,0.1)' : 'var(--amber-15)'
+                            const chipBorder = isIP ? 'rgba(100,181,246,0.3)' : isUser ? 'rgba(206,147,216,0.3)' : 'var(--amber-40)'
+                            return (
+                              <div key={i} style={{ ...S.chip, color: chipColor, background: chipBg, border: `0.5px solid ${chipBorder}` }}>
+                                <span>{field}</span>
+                                {val && <><span style={{ color: `${chipColor}50` }}>=</span><span style={{ color: 'var(--text-primary)', fontSize: '8px' }}>{val.length > 20 ? val.slice(0, 20) + '…' : val}</span></>}
+                              </div>
+                            )
+                          })()
                         )
                       })}
                     </div>
@@ -301,8 +321,17 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
           {/* CONTAINMENT CTA */}
           <div style={S.containmentSection}>
             <div style={S.containmentLeft}>
-              <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '10px', color: 'var(--text-secondary)', letterSpacing: '0.04em' }}>
-                Analysis complete. Ready to generate response.
+              <div style={{ display: 'flex', gap: '10px', marginBottom: '5px' }}>
+                {[
+                  { label: 'Triage Ready', ok: true },
+                  { label: 'Intel Verified', ok: (result?.ips?.length > 0) },
+                  { label: 'Assets Mapped', ok: !!triage.affected_asset },
+                ].map((item, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
+                    <span style={{ color: item.ok ? '#4CAF50' : 'var(--text-muted)', fontSize: '9px' }}>{item.ok ? '✓' : '○'}</span>
+                    <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: item.ok ? 'var(--text-secondary)' : 'var(--text-muted)', letterSpacing: '0.06em' }}>{item.label}</span>
+                  </div>
+                ))}
               </div>
               <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-muted)' }}>
                 PowerShell · CMD · Investigation · Warnings

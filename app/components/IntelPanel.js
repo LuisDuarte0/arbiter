@@ -20,6 +20,7 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
   const otx       = intel?.otx ?? null
 
   const cached = primaryIP ? indicatorCache?.[primaryIP] : null
+  const correlation = result?.correlation ?? null
 
   return (
     <div className={`arb-panel arb-intel${collapsed ? ' arb-panel-collapsed' : ''}`}>
@@ -147,6 +148,76 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
                 )}
               </div>
             )}
+
+            {correlation?.hits?.length > 0 && (
+              <div className="arb-section" style={{ borderTop: '0.5px solid var(--border)', paddingTop: '12px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <div className="arb-card-label" style={{ color: '#E57373', marginBottom: 0 }}>ARBITER MEMORY</div>
+                  {result?.meta?.activeCampaign && (
+                    <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', background: '#E57373', color: '#080C14', borderRadius: '2px', padding: '2px 6px', letterSpacing: '0.1em' }}>
+                      ACTIVE CAMPAIGN
+                    </span>
+                  )}
+                </div>
+                {result?.meta?.uniqueAssets > 1 && (
+                  <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '8px', color: '#E57373', marginBottom: '8px' }}>
+                    BLAST RADIUS: {result.meta.uniqueAssets} UNIQUE ASSETS HIT
+                  </div>
+                )}
+                {correlation.hits.map((h, i) => {
+                  const age = Math.round((Date.now() - h.timestamp) / 60000)
+                  const indicator = h.key?.startsWith('ip:') ? `IP ${h.key.slice(3)}` : `User ${h.key?.slice(5)}`
+                  return (
+                    <div key={i} style={{ marginBottom: '10px', paddingBottom: '10px', borderBottom: i < correlation.hits.length - 1 ? '0.5px solid var(--border)' : 'none' }}>
+                      <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '9px', color: '#E57373', marginBottom: '4px' }}>{indicator}</div>
+                      <div className="arb-meta-row"><span className="arb-mk">SEEN</span><span className="arb-mv arb-mv-bad">{h.count}× IN LAST 24H</span></div>
+                      <div className="arb-meta-row"><span className="arb-mk">LAST SEVERITY</span><span className="arb-mv">{h.severity}</span></div>
+                      <div className="arb-meta-row"><span className="arb-mk">LAST SEEN</span><span className="arb-mv">{age}min ago</span></div>
+                      {h.assets?.length > 0 && (
+                        <div style={{ marginTop: '6px' }}>
+                          <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.12em', marginBottom: '3px' }}>ASSET TRAIL</div>
+                          {h.assets.map((asset, j) => (
+                            <div key={j} style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '2px' }}>
+                              <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: j === 0 ? '#E57373' : 'var(--text-muted)', flexShrink: 0 }} />
+                              <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '8px', color: j === 0 ? '#E57373' : 'var(--text-muted)' }}>{asset}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+
+            {correlation?.hits?.length > 0 && (() => {
+              const allCases = correlation.hits.flatMap(h =>
+                (h.cases ?? []).map(caseId => ({
+                  caseId,
+                  severity: h.severity,
+                  indicator: h.key?.startsWith('ip:') ? h.key.slice(3) : h.key?.slice(5),
+                }))
+              ).slice(0, 8)
+              if (!allCases.length) return null
+              return (
+                <div className="arb-section" style={{ borderTop: '0.5px solid var(--border)', paddingTop: '12px' }}>
+                  <div className="arb-card-label" style={{ marginBottom: '8px' }}>CAMPAIGN TIMELINE</div>
+                  {allCases.map((c, i) => (
+                    <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', marginBottom: '6px' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                        <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: c.severity === 'CRITICAL' ? 'var(--red)' : c.severity === 'HIGH' ? 'var(--amber)' : 'var(--text-muted)', marginTop: '2px' }} />
+                        {i < allCases.length - 1 && <div style={{ width: '1px', height: '14px', background: 'var(--border-bright)' }} />}
+                      </div>
+                      <div>
+                        <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '8px', color: 'var(--text-secondary)' }}>{c.caseId.slice(4, 17)}</div>
+                        <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)' }}>{c.indicator}</div>
+                      </div>
+                      <span className={`arb-badge arb-${c.severity?.toLowerCase()}`} style={{ marginLeft: 'auto', fontSize: '7px' }}>{c.severity}</span>
+                    </div>
+                  ))}
+                </div>
+              )
+            })()}
 
             {ips.length > 1 && (
               <div className="arb-section">

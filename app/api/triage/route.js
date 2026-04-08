@@ -191,7 +191,7 @@ async function enrichIP(ip) {
 // Pre-computes enrichment consensus and weight signals before LLM sees the data.
 // This moves threshold logic from the non-deterministic LLM into deterministic JS.
 
-function buildEnrichmentJudgment(enrichment, ips) {
+function buildEnrichmentJudgment(enrichment, ips, frequencyMultiplier = 0) {
   if (!ips.length) {
     return {
       summary: 'No public IPs detected. Analysis based on behavioral indicators only.',
@@ -331,11 +331,16 @@ function buildEnrichmentJudgment(enrichment, ips) {
     ].join('\n')
   })
 
+  const frequencyBonus = frequencyMultiplier >= 3 ? 20 : frequencyMultiplier >= 2 ? 10 : 0
+  const frequencyNote = frequencyMultiplier >= 3
+    ? `\nFREQUENCY ALERT: This indicator has appeared ${frequencyMultiplier}× across sessions — automatic severity escalation applied.`
+    : ''
+
   return {
-    summary: summaryLines.join('\n\n'),
-    judgment: dominantVerdict,
-    blockRecommendationAllowed: blockAllowed,
-    confidenceModifier: Math.max(-25, Math.min(+20, totalModifier)),
+    summary: summaryLines.join('\n\n') + frequencyNote,
+    judgment: frequencyMultiplier >= 3 ? 'CONFIRMED_MALICIOUS' : dominantVerdict,
+    blockRecommendationAllowed: blockAllowed || frequencyMultiplier >= 3,
+    confidenceModifier: Math.max(-25, Math.min(+20, totalModifier + frequencyBonus)),
     ipJudgments,
   }
 }
@@ -602,7 +607,12 @@ export async function POST(request) {
         send(controller, 'enrichment', { enrichment, ips })
 
         // ── REDIS: READ HISTORICAL CONTEXT ───────────────────────────────────
-        const redisHits    = await getRedisContext(ips, parsedAlert.username)
+
+        const normalizedUsername = parsedAlert.username?.includes('\\')
+        ? parsedAlert.username.split('\\').pop()
+        : parsedAlert.username
+
+        const redisHits = await getRedisContext(ips, normalizedUsername)
         const redisContext = buildRedisContextSummary(redisHits)
         const isCorrelated = !!(redisHits?.length)
 
@@ -613,7 +623,10 @@ export async function POST(request) {
         // ── PHASE 2: LLM TRIAGE WITH FULL ENRICHMENT CONTEXT ────────────────
         send(controller, 'status', { phase: 'analyzing', message: 'ARBITER is analyzing your alert...' })
 
-        const enrichmentJudgment = buildEnrichmentJudgment(enrichment, ips)
+        const frequencyMultiplier = redisHits?.reduce((max, h) => Math.max(max, h.count ?? 0), 0) ?? 0
+        const uniqueAssetCount = redisHits?.reduce((set, h) => { (h.assets ?? []).forEach(a => set.add(a)); return set }, new Set())?.size ?? 0
+        const isActiveCampaign = frequencyMultiplier >= 2 && uniqueAssetCount >= 2
+        const enrichmentJudgment = buildEnrichmentJudgment(enrichment, ips, frequencyMultiplier)
         const parsedContext = Object.entries(parsedAlert)
           .filter(([_, v]) => v !== null)
           .map(([k, v]) => `${k}: ${v}`)
@@ -644,7 +657,7 @@ confidenceModifier: ${enrichmentJudgment.confidenceModifier > 0 ? '+' : ''}${enr
 
 ${redisContext ? `TEMPORAL CORRELATION (ARBITER MEMORY — last 24h):
 ${redisContext}
-IMPORTANT: Reference this historical activity in your reasoning. If the same IP or user appears multiple times, state the count and time elapsed.
+${isActiveCampaign ? `ACTIVE CAMPAIGN ALERT: This indicator has hit ${uniqueAssetCount} unique assets across ${frequencyMultiplier} sessions. This is lateral movement or a coordinated campaign. Severity MUST be CRITICAL. State the asset breadcrumb trail in your reasoning.` : 'IMPORTANT: Reference this historical activity in your reasoning. If the same IP or user appears multiple times, state the count and time elapsed.'}
 ` : ''}Analyze this alert. Enumerate technical facts first. Apply MITRE mapping rules precisely. Return only the JSON triage object.`
             }
           ]
@@ -680,7 +693,7 @@ IMPORTANT: Reference this historical activity in your reasoning. If the same IP 
 
         // Write to Redis after successful triage
         const caseId = `ARB-${startTime}`
-        await writeRedisContext(ips, parsedAlert.username, triage, caseId)
+        await writeRedisContext(ips, normalizedUsername, triage, caseId)
 
         // Stream final triage result
         send(controller, 'triage', {
@@ -694,6 +707,8 @@ IMPORTANT: Reference this historical activity in your reasoning. If the same IP 
             alertType:         parsedAlert.alertType,
             parsedFields:      Object.keys(parsedAlert).filter(k => parsedAlert[k] !== null),
             correlated:        isCorrelated,
+            activeCampaign:    isActiveCampaign,
+            uniqueAssets:      uniqueAssetCount,
           }
         })
 

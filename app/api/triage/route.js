@@ -1116,6 +1116,19 @@ export async function POST(request) {
         }
 
         const parsedAlert   = parseAlert(alertText)
+
+        // ── ACS NORMALIZATION (feature/acs-architecture) ──────────────────────
+        // Runs alongside existing pipeline — does not yet replace it.
+        // Will progressively take over detection in future iterations.
+        let acsObject = null
+        try {
+          const { normalize } = await import('./normalizer.js')
+          acsObject = normalize(alertText, parsedAlert)
+        } catch (acsErr) {
+          console.error('[ARBITER/ACS] Normalization failed:', acsErr.message)
+          acsObject = null
+        }
+
         const sanitizedAlert = sanitizeAlertText(
           alertText.length > 3000 ? alertText.slice(0, 3000) + '\n[TRUNCATED]' : alertText
         )
@@ -1465,6 +1478,7 @@ export async function POST(request) {
             deterministicMitre:       finalVerdict.deterministicMitre,
             signals:                  (finalVerdict.signals ?? []).map(s => ({ rule: s.rule, label: s.label, severity: s.severity, category: s.category, ...(s.mitre ? { mitre: s.mitre } : {}) })),
             correlationPatterns:      redisPatterns,
+            acs:                      acsObject,
           }
         })
 

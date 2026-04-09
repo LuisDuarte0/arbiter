@@ -381,7 +381,7 @@ function validateAndOverrideTriage(triage, parsedAlert, enrichmentJudgment, redi
 
 // ── DECISION ENGINE ───────────────────────────────────────────────────────────
 
-function getSignals(parsed, enrichmentJudgment, redisHits) {
+function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
   const signals = []
 
   const asset = (parsed.asset ?? '').toUpperCase()
@@ -398,7 +398,7 @@ function getSignals(parsed, enrichmentJudgment, redisHits) {
 
   for (const cp of criticalPatterns) {
     if (cp.pattern.test(combinedAssets)) {
-      signals.push({ rule: 'ASSET_CRITICAL', label: cp.label, severity: cp.severity, confidence: cp.confidence, weight: cp.weight, evidence: [`asset=${parsed.asset ?? parsed.allAssets}`], category: 'asset', source: 'parser' })
+      signals.push({ rule: 'ASSET_CRITICAL', label: cp.label, severity: cp.severity, confidence: cp.confidence, weight: cp.weight, evidence: [`asset=${parsed.asset ?? parsed.allAssets}`], category: 'asset', source: 'windows-eventid', signal_layer: 'enrichment', explanation_weight: cp.severity === 'CRITICAL' ? 'high' : 'medium', confidence_boost: cp.severity === 'CRITICAL' ? 15 : 10 })
       break
     }
   }
@@ -407,10 +407,10 @@ function getSignals(parsed, enrichmentJudgment, redisHits) {
   const eventIds = (parsed.allEventCodes ?? parsed.eventId ?? '').split(',').map(s => s.trim())
 
   if (eventIds.includes('4625') || eventIds.includes('4771')) {
-    if (count > 100) signals.push({ rule: 'BRUTE_FORCE_EXTREME', label: 'Extreme brute force volume', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`EventCode=4625`, `Count=${count}`], category: 'behavioral', source: 'parser', mitre: 'T1110.001' })
-    else if (count > 20) signals.push({ rule: 'BRUTE_FORCE_HIGH', label: 'High-volume brute force', severity: 'CRITICAL', confidence: 90, weight: 4, evidence: [`EventCode=4625`, `Count=${count}`], category: 'behavioral', source: 'parser', mitre: 'T1110.001' })
-    else if (count > 5) signals.push({ rule: 'BRUTE_FORCE_MEDIUM', label: 'Repeated failed logons', severity: 'HIGH', confidence: 75, weight: 3, evidence: [`EventCode=4625`, `Count=${count}`], category: 'behavioral', source: 'parser', mitre: 'T1110.001' })
-    else signals.push({ rule: 'LOGON_FAILURE_LOW', label: 'Low-count logon failure', severity: 'LOW', confidence: 70, weight: 1, evidence: [`EventCode=4625`, `Count=${count || '1'}`], category: 'behavioral', source: 'parser', mitre: 'T1110' })
+    if (count > 100) signals.push({ rule: 'BRUTE_FORCE_EXTREME', label: 'Extreme brute force volume', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`EventCode=4625`, `Count=${count}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1110.001', explanation_weight: 'high', confidence_boost: 15 })
+    else if (count > 20) signals.push({ rule: 'BRUTE_FORCE_HIGH', label: 'High-volume brute force', severity: 'CRITICAL', confidence: 90, weight: 4, evidence: [`EventCode=4625`, `Count=${count}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1110.001', explanation_weight: 'high', confidence_boost: 15 })
+    else if (count > 5) signals.push({ rule: 'BRUTE_FORCE_MEDIUM', label: 'Repeated failed logons', severity: 'HIGH', confidence: 75, weight: 3, evidence: [`EventCode=4625`, `Count=${count}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1110.001', explanation_weight: 'medium', confidence_boost: 10 })
+    else signals.push({ rule: 'LOGON_FAILURE_LOW', label: 'Low-count logon failure', severity: 'LOW', confidence: 70, weight: 1, evidence: [`EventCode=4625`, `Count=${count || '1'}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1110', explanation_weight: 'low', confidence_boost: 5 })
   }
 
   const cmdLine = (parsed.commandLine ?? '').toLowerCase()
@@ -418,53 +418,53 @@ function getSignals(parsed, enrichmentJudgment, redisHits) {
   const parentProc = (parsed.parentProcess ?? '').toLowerCase()
 
   if (procName.includes('certutil') && /-urlcache|-split|-f/.test(cmdLine)) {
-    signals.push({ rule: 'LOLBIN_CERTUTIL_DOWNLOAD', label: 'certutil used as download cradle', severity: 'HIGH', confidence: 92, weight: 5, evidence: [`ProcessName=${parsed.processName}`, `CommandLine=${parsed.commandLine?.slice(0,80)}`], category: 'behavioral', source: 'parser', mitre: 'T1105' })
+    signals.push({ rule: 'LOLBIN_CERTUTIL_DOWNLOAD', label: 'certutil used as download cradle', severity: 'HIGH', confidence: 92, weight: 5, evidence: [`ProcessName=${parsed.processName}`, `CommandLine=${parsed.commandLine?.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1105', explanation_weight: 'medium', confidence_boost: 10 })
     if (/users\\public|windows\\temp|programdata/i.test(cmdLine))
-      signals.push({ rule: 'LOLBIN_CERTUTIL_SUSPICIOUS_PATH', label: 'certutil writing to suspicious path', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`CommandLine=${parsed.commandLine?.slice(0,80)}`], category: 'behavioral', source: 'parser', mitre: 'T1105' })
+      signals.push({ rule: 'LOLBIN_CERTUTIL_SUSPICIOUS_PATH', label: 'certutil writing to suspicious path', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`CommandLine=${parsed.commandLine?.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1105', explanation_weight: 'high', confidence_boost: 15 })
   }
 
   if (procName.includes('mshta') && /http[s]?:\/\//i.test(cmdLine))
-    signals.push({ rule: 'LOLBIN_MSHTA_REMOTE', label: 'mshta executing remote content', severity: 'HIGH', confidence: 90, weight: 5, evidence: [`ProcessName=${parsed.processName}`, `CommandLine=${parsed.commandLine?.slice(0,80)}`], category: 'behavioral', source: 'parser', mitre: 'T1218.005' })
+    signals.push({ rule: 'LOLBIN_MSHTA_REMOTE', label: 'mshta executing remote content', severity: 'HIGH', confidence: 90, weight: 5, evidence: [`ProcessName=${parsed.processName}`, `CommandLine=${parsed.commandLine?.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1218.005', explanation_weight: 'medium', confidence_boost: 10 })
 
   const officeParents = ['winword.exe','excel.exe','powerpnt.exe','outlook.exe']
   const lolbins = ['mshta.exe','wscript.exe','cscript.exe','powershell.exe','cmd.exe','certutil.exe','regsvr32.exe','rundll32.exe']
   if (officeParents.some(p => parentProc.includes(p)) && lolbins.some(l => procName.includes(l)))
-    signals.push({ rule: 'OFFICE_MACRO_DROPPER', label: 'Office application spawning LOLBin', severity: 'CRITICAL', confidence: 98, weight: 5, evidence: [`ParentProcess=${parsed.parentProcess}`, `ProcessName=${parsed.processName}`], category: 'behavioral', source: 'parser', mitre: 'T1204.002' })
+    signals.push({ rule: 'OFFICE_MACRO_DROPPER', label: 'Office application spawning LOLBin', severity: 'CRITICAL', confidence: 98, weight: 5, evidence: [`ParentProcess=${parsed.parentProcess}`, `ProcessName=${parsed.processName}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1204.002', explanation_weight: 'high', confidence_boost: 15 })
 
   if (procName.includes('powershell') && /-enc\b|-encodedcommand/i.test(cmdLine))
-    signals.push({ rule: 'POWERSHELL_ENCODED', label: 'Encoded PowerShell command', severity: 'HIGH', confidence: 85, weight: 4, evidence: [`ProcessName=${parsed.processName}`, `CommandLine=${parsed.commandLine?.slice(0,80)}`], category: 'behavioral', source: 'parser', mitre: 'T1059.001' })
+    signals.push({ rule: 'POWERSHELL_ENCODED', label: 'Encoded PowerShell command', severity: 'HIGH', confidence: 85, weight: 4, evidence: [`ProcessName=${parsed.processName}`, `CommandLine=${parsed.commandLine?.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1059.001', explanation_weight: 'medium', confidence_boost: 10 })
 
   if (eventIds.includes('4698') || eventIds.includes('4702')) {
     const taskContent = (parsed.taskContent ?? parsed.commandLine ?? parsed.taskName ?? '').toLowerCase()
     if (/iex|invoke-expression|downloadstring|-enc|certutil/i.test(taskContent))
-      signals.push({ rule: 'SCHEDULED_TASK_CRADLE', label: 'Scheduled task with download cradle', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`EventCode=4698`, `TaskName=${parsed.taskName}`, `Content=${taskContent.slice(0,60)}`], category: 'behavioral', source: 'parser', mitre: 'T1053.005' })
+      signals.push({ rule: 'SCHEDULED_TASK_CRADLE', label: 'Scheduled task with download cradle', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`EventCode=4698`, `TaskName=${parsed.taskName}`, `Content=${taskContent.slice(0,60)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1053.005', explanation_weight: 'high', confidence_boost: 15 })
     else
-      signals.push({ rule: 'SCHEDULED_TASK_CREATED', label: 'Scheduled task created', severity: 'MEDIUM', confidence: 60, weight: 2, evidence: [`EventCode=4698`, `TaskName=${parsed.taskName}`], category: 'behavioral', source: 'parser', mitre: 'T1053.005' })
+      signals.push({ rule: 'SCHEDULED_TASK_CREATED', label: 'Scheduled task created', severity: 'MEDIUM', confidence: 60, weight: 2, evidence: [`EventCode=4698`, `TaskName=${parsed.taskName}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1053.005', explanation_weight: 'low', confidence_boost: 5 })
   }
 
   if (eventIds.includes('4697') || eventIds.includes('7045')) {
     const svcPath = (parsed.commandLine ?? parsed.objectName ?? '').toLowerCase()
     if (/users\\public|windows\\temp|programdata|appdata/i.test(svcPath))
-      signals.push({ rule: 'SERVICE_SUSPICIOUS_PATH', label: 'Service binary in suspicious path', severity: 'CRITICAL', confidence: 93, weight: 5, evidence: [`EventCode=4697`, `ServiceName=${parsed.serviceName}`, `Path=${svcPath.slice(0,60)}`], category: 'behavioral', source: 'parser', mitre: 'T1543.003' })
+      signals.push({ rule: 'SERVICE_SUSPICIOUS_PATH', label: 'Service binary in suspicious path', severity: 'CRITICAL', confidence: 93, weight: 5, evidence: [`EventCode=4697`, `ServiceName=${parsed.serviceName}`, `Path=${svcPath.slice(0,60)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1543.003', explanation_weight: 'high', confidence_boost: 15 })
   }
 
   if (eventIds.includes('1102') || eventIds.includes('4719'))
-    signals.push({ rule: 'AUDIT_LOG_CLEARED', label: 'Security audit log cleared', severity: 'CRITICAL', confidence: 98, weight: 5, evidence: [`EventCode=${eventIds.includes('1102') ? '1102' : '4719'}`], category: 'behavioral', source: 'parser', mitre: 'T1070.001' })
+    signals.push({ rule: 'AUDIT_LOG_CLEARED', label: 'Security audit log cleared', severity: 'CRITICAL', confidence: 98, weight: 5, evidence: [`EventCode=${eventIds.includes('1102') ? '1102' : '4719'}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1070.001', explanation_weight: 'high', confidence_boost: 15 })
 
   if (eventIds.includes('4720')) {
     const targetUser = (parsed.targetUsername ?? parsed.username ?? '').toLowerCase()
     const isSuspiciousName = /backdoor|hack|persist|0day|temp|svc_|_svc|admin_/i.test(targetUser)
     if (isSuspiciousName) {
-      signals.push({ rule: 'ACCOUNT_CREATED_SUSPICIOUS', label: `Suspicious account created: ${parsed.targetUsername ?? parsed.username}`, severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`EventCode=4720`, `TargetUserName=${parsed.targetUsername ?? parsed.username}`, `CreatedBy=${parsed.username}`], category: 'behavioral', source: 'parser', mitre: 'T1136.001' })
+      signals.push({ rule: 'ACCOUNT_CREATED_SUSPICIOUS', label: `Suspicious account created: ${parsed.targetUsername ?? parsed.username}`, severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`EventCode=4720`, `TargetUserName=${parsed.targetUsername ?? parsed.username}`, `CreatedBy=${parsed.username}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1136.001', explanation_weight: 'high', confidence_boost: 15 })
     } else {
-      signals.push({ rule: 'ACCOUNT_CREATED', label: 'New user account created', severity: 'MEDIUM', confidence: 65, weight: 3, evidence: [`EventCode=4720`, `TargetUserName=${parsed.targetUsername ?? parsed.username}`], category: 'behavioral', source: 'parser', mitre: 'T1136.001' })
+      signals.push({ rule: 'ACCOUNT_CREATED', label: 'New user account created', severity: 'MEDIUM', confidence: 65, weight: 3, evidence: [`EventCode=4720`, `TargetUserName=${parsed.targetUsername ?? parsed.username}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1136.001', explanation_weight: 'low', confidence_boost: 5 })
     }
   }
 
   if (eventIds.includes('4663') || eventIds.includes('4656')) {
     const obj = (parsed.objectName ?? '').toLowerCase()
-    if (obj.includes('ntds.dit')) signals.push({ rule: 'NTDS_ACCESS', label: 'ntds.dit accessed', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`EventCode=4663`, `ObjectName=${parsed.objectName}`], category: 'behavioral', source: 'parser', mitre: 'T1003.003' })
-    else if (obj.includes('sam')) signals.push({ rule: 'SAM_ACCESS', label: 'SAM database accessed', severity: 'CRITICAL', confidence: 96, weight: 5, evidence: [`EventCode=4663`, `ObjectName=${parsed.objectName}`], category: 'behavioral', source: 'parser', mitre: 'T1003.002' })
+    if (obj.includes('ntds.dit')) signals.push({ rule: 'NTDS_ACCESS', label: 'ntds.dit accessed', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`EventCode=4663`, `ObjectName=${parsed.objectName}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1003.003', explanation_weight: 'high', confidence_boost: 15 })
+    else if (obj.includes('sam')) signals.push({ rule: 'SAM_ACCESS', label: 'SAM database accessed', severity: 'CRITICAL', confidence: 96, weight: 5, evidence: [`EventCode=4663`, `ObjectName=${parsed.objectName}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1003.002', explanation_weight: 'high', confidence_boost: 15 })
   }
 
   if (procName && cmdLine) {
@@ -472,23 +472,82 @@ function getSignals(parsed, enrichmentJudgment, redisHits) {
     const isLsassDump = /comsvcs|minidump|lsass/i.test(cmdLine)
     const isMimikatz = /mimikatz|sekurlsa|privilege::debug/i.test(cmdLine)
     if (isRundll32 && isLsassDump) {
-      signals.push({ rule: 'LSASS_DUMP_RUNDLL32', label: 'LSASS memory dump via rundll32/comsvcs', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`ProcessName=${parsed.processName}`, `CommandLine=${parsed.commandLine?.slice(0,80)}`], category: 'behavioral', source: 'parser', mitre: 'T1003.001' })
+      signals.push({ rule: 'LSASS_DUMP_RUNDLL32', label: 'LSASS memory dump via rundll32/comsvcs', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`ProcessName=${parsed.processName}`, `CommandLine=${parsed.commandLine?.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1003.001', explanation_weight: 'high', confidence_boost: 15 })
     }
     if (isMimikatz) {
-      signals.push({ rule: 'MIMIKATZ_DETECTED', label: 'Mimikatz credential dumping detected', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`CommandLine=${parsed.commandLine?.slice(0,80)}`], category: 'behavioral', source: 'parser', mitre: 'T1003.001' })
+      signals.push({ rule: 'MIMIKATZ_DETECTED', label: 'Mimikatz credential dumping detected', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`CommandLine=${parsed.commandLine?.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1003.001', explanation_weight: 'high', confidence_boost: 15 })
     }
   }
 
   const verdict = enrichmentJudgment?.judgment
-  if (verdict === 'CONFIRMED_MALICIOUS') signals.push({ rule: 'ENRICHMENT_CONFIRMED_MALICIOUS', label: 'IP confirmed malicious', severity: 'HIGH', confidence: 80, weight: 3, evidence: [`enrichmentVerdict=CONFIRMED_MALICIOUS`], category: 'enrichment', source: 'enrichment', mitre: null })
-  else if (verdict === 'SUSPICIOUS') signals.push({ rule: 'ENRICHMENT_SUSPICIOUS', label: 'IP flagged suspicious', severity: 'MEDIUM', confidence: 60, weight: 2, evidence: [`enrichmentVerdict=SUSPICIOUS`], category: 'enrichment', source: 'enrichment', mitre: null })
-  else if (verdict === 'CLEAN') signals.push({ rule: 'ENRICHMENT_CLEAN', label: 'IP clean across all sources', severity: 'LOW', confidence: 50, weight: 1, evidence: [`enrichmentVerdict=CLEAN`], category: 'enrichment', source: 'enrichment', mitre: null })
+  if (verdict === 'CONFIRMED_MALICIOUS') signals.push({ rule: 'ENRICHMENT_CONFIRMED_MALICIOUS', label: 'IP confirmed malicious', severity: 'HIGH', confidence: 80, weight: 3, evidence: [`enrichmentVerdict=CONFIRMED_MALICIOUS`], category: 'enrichment', source: 'windows-eventid', signal_layer: 'enrichment', mitre: null, explanation_weight: 'medium', confidence_boost: 10 })
+  else if (verdict === 'SUSPICIOUS') signals.push({ rule: 'ENRICHMENT_SUSPICIOUS', label: 'IP flagged suspicious', severity: 'MEDIUM', confidence: 60, weight: 2, evidence: [`enrichmentVerdict=SUSPICIOUS`], category: 'enrichment', source: 'windows-eventid', signal_layer: 'enrichment', mitre: null, explanation_weight: 'low', confidence_boost: 5 })
+  else if (verdict === 'CLEAN') signals.push({ rule: 'ENRICHMENT_CLEAN', label: 'IP clean across all sources', severity: 'LOW', confidence: 50, weight: 1, evidence: [`enrichmentVerdict=CLEAN`], category: 'enrichment', source: 'windows-eventid', signal_layer: 'enrichment', mitre: null, explanation_weight: 'low', confidence_boost: 5 })
 
   if (redisHits?.length > 0) {
     const maxCount = redisHits.reduce((max, h) => Math.max(max, h.count ?? 0), 0)
     const uniqueAssets = new Set(redisHits.flatMap(h => h.assets ?? [])).size
-    if (maxCount >= 2 && uniqueAssets >= 2) signals.push({ rule: 'ACTIVE_CAMPAIGN', label: `Active campaign — ${maxCount} hits across ${uniqueAssets} assets`, severity: 'CRITICAL', confidence: 90, weight: 5, evidence: [`redisHits=${maxCount}`, `uniqueAssets=${uniqueAssets}`], category: 'frequency', source: 'redis', mitre: 'T1078' })
-    else if (maxCount >= 2) signals.push({ rule: 'REPEATED_INDICATOR', label: `Indicator seen ${maxCount}× in last 24h`, severity: 'HIGH', confidence: 75, weight: 3, evidence: [`redisHits=${maxCount}`], category: 'frequency', source: 'redis', mitre: 'T1078' })
+    if (maxCount >= 2 && uniqueAssets >= 2) signals.push({ rule: 'ACTIVE_CAMPAIGN', label: `Active campaign — ${maxCount} hits across ${uniqueAssets} assets`, severity: 'CRITICAL', confidence: 90, weight: 5, evidence: [`redisHits=${maxCount}`, `uniqueAssets=${uniqueAssets}`], category: 'frequency', source: 'redis', signal_layer: 'behavioral', mitre: 'T1078', explanation_weight: 'high', confidence_boost: 15 })
+    else if (maxCount >= 2) signals.push({ rule: 'REPEATED_INDICATOR', label: `Indicator seen ${maxCount}× in last 24h`, severity: 'HIGH', confidence: 75, weight: 3, evidence: [`redisHits=${maxCount}`], category: 'frequency', source: 'redis', signal_layer: 'behavioral', mitre: 'T1078', explanation_weight: 'medium', confidence_boost: 10 })
+  }
+
+  // ── ACS BEHAVIORAL SIGNALS ────────────────────────────────────────────────
+  // These signals fire from acs_data only — vendor-agnostic, format-blind.
+  // They run alongside existing EventID signals, not replacing them.
+  // Priority: existing behavioral signals (weight 5) > ACS signals (weight 3-4)
+  // to avoid double-counting.
+
+  const acs = acsObject?.acs_data
+  const acsVendor = acsObject?.meta?.vendor_origin ?? 'unknown'
+  const normScore = acsObject?.meta?.normalization_score ?? 0
+
+  if (acs && normScore >= 0.5) {
+
+    // AUTH FAILURE — vendor agnostic brute force detection
+    if (acs.event_type === 'auth' && acs.event_outcome === 'failure') {
+      const count = acs.count ?? 1
+      if (count > 20) {
+        signals.push({ rule: 'ACS_AUTH_FAILURE_MASS', label: `Mass authentication failures (${count}×) via ${acsVendor}`, severity: 'CRITICAL', confidence: 88, weight: 4, evidence: [`event_type=auth`, `event_outcome=failure`, `count=${count}`, `src_ip=${acs.src_ip ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110' })
+      } else if (count > 5) {
+        signals.push({ rule: 'ACS_AUTH_FAILURE_HIGH', label: `Repeated authentication failures (${count}×) via ${acsVendor}`, severity: 'HIGH', confidence: 75, weight: 3, evidence: [`event_type=auth`, `event_outcome=failure`, `count=${count}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110' })
+      } else {
+        signals.push({ rule: 'ACS_AUTH_FAILURE_LOW', label: `Authentication failure via ${acsVendor}`, severity: 'LOW', confidence: 55, weight: 2, evidence: [`event_type=auth`, `event_outcome=failure`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110' })
+      }
+    }
+
+    // PRIVILEGE ESCALATION — sudo, role assumption, policy changes
+    if (acs.event_type === 'privilege' && acs.action !== 'unknown') {
+      signals.push({ rule: 'ACS_PRIVILEGE_ACTION', label: `Privilege action detected: ${acs.action} via ${acsVendor}`, severity: 'MEDIUM', confidence: 65, weight: 3, evidence: [`event_type=privilege`, `action=${acs.action}`, `user=${acs.user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1078' })
+    }
+
+    // PROCESS EXECUTION WITH COMMAND LINE — cross-vendor LOLBin detection
+    if (acs.event_type === 'process' && acs.command_line) {
+      const cmd = acs.command_line.toLowerCase()
+      if (/wget|curl.*http|bash.*-c.*http|python.*urllib|nc\s+-e|ncat/i.test(cmd)) {
+        signals.push({ rule: 'ACS_REMOTE_DOWNLOAD', label: `Remote download/execution via command line (${acsVendor})`, severity: 'HIGH', confidence: 82, weight: 4, evidence: [`event_type=process`, `command_line=${acs.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1105' })
+      }
+      if (/base64.*decode|echo.*\|.*base64|openssl.*base64/i.test(cmd)) {
+        signals.push({ rule: 'ACS_BASE64_EXECUTION', label: `Base64-encoded command execution (${acsVendor})`, severity: 'HIGH', confidence: 80, weight: 4, evidence: [`command_line=${acs.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1027' })
+      }
+      if (/sudo\s+(bash|sh|python|perl|ruby|php|nc|ncat)/i.test(cmd)) {
+        signals.push({ rule: 'ACS_SUDO_SHELL', label: `Sudo to interactive shell (${acsVendor})`, severity: 'CRITICAL', confidence: 90, weight: 4, evidence: [`command_line=${acs.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1548.003' })
+      }
+    }
+
+    // CLOUD SPECIFIC — IAM and data exfil patterns
+    if (acsVendor === 'cloudtrail') {
+      if (acs.action?.includes('putuserpolicy') || acs.action?.includes('attachpolicy')) {
+        signals.push({ rule: 'ACS_CLOUD_PRIVILEGE_ESCALATION', label: 'Cloud IAM privilege escalation detected', severity: 'HIGH', confidence: 85, weight: 4, evidence: [`action=${acs.action}`, `user=${acs.user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1098' })
+      }
+      if (acs.event_outcome === 'failure' && acs.action?.includes('assume')) {
+        signals.push({ rule: 'ACS_CLOUD_ROLE_ASSUMPTION_FAIL', label: 'Failed cloud role assumption attempt', severity: 'MEDIUM', confidence: 70, weight: 3, evidence: [`action=${acs.action}`, `src_ip=${acs.src_ip ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1078.004' })
+      }
+    }
+
+    // GENERIC PARTIAL — signal when we detect something but can't be specific
+    if (acsObject?.meta?.is_generic && normScore < 0.5) {
+      signals.push({ rule: 'ACS_PARTIAL_DETECTION', label: 'Partial normalization — limited behavioral detection', severity: 'LOW', confidence: 30, weight: 1, evidence: [`normalization_score=${normScore}`, `vendor=unknown`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: null })
+    }
   }
 
   return signals
@@ -497,29 +556,39 @@ function getSignals(parsed, enrichmentJudgment, redisHits) {
 function aggregateSignals(signals, parseQuality = 'structured') {
   if (!signals.length) return { severity: 'LOW', classification: 'UNKNOWN', confidence: 20, asset_is_critical: false, evidence: [], decision_trace: ['No rules matched — defaulting to LOW/UNKNOWN'] }
 
-  const categoryPriority = { behavioral: 4, asset: 3, frequency: 2, enrichment: 1 }
-  const severityRank = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 }
+  const severityRank   = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 }
+  const severityByRank = { 4: 'CRITICAL', 3: 'HIGH', 2: 'MEDIUM', 1: 'LOW' }
 
-  const sorted = [...signals].sort((a, b) => {
-    const catDiff = (categoryPriority[b.category] ?? 0) - (categoryPriority[a.category] ?? 0)
-    if (catDiff !== 0) return catDiff
-    const weightDiff = b.weight - a.weight
-    if (weightDiff !== 0) return weightDiff
+  // ── Layer separation ────────────────────────────────────────────────────────
+  const isBehavioral  = s => s.signal_layer === 'behavioral' || (!s.signal_layer && (s.category === 'behavioral' || s.category === 'asset' || s.category === 'frequency'))
+  const isEnrichment  = s => s.signal_layer === 'enrichment'  || (!s.signal_layer && s.category === 'enrichment')
+  const behavioralSignals = signals.filter(isBehavioral)
+  const enrichmentSignals = signals.filter(isEnrichment)
+
+  const sortLayer = arr => [...arr].sort((a, b) => {
+    const wDiff = b.weight - a.weight
+    if (wDiff !== 0) return wDiff
     return b.confidence - a.confidence
   })
+  const sortedBehavioral = sortLayer(behavioralSignals)
+  const sortedEnrichment = sortLayer(enrichmentSignals)
 
-  const dominant = sorted[0]
-  const hasBehavioral = signals.some(s => s.category === 'behavioral' || s.category === 'asset')
-  let finalSeverityRank = severityRank[dominant.severity] ?? 1
+  const hasBehavioral = sortedBehavioral.length > 0
+  const dominant = sortedBehavioral[0] ?? sortedEnrichment[0] ?? signals[0]
 
-  for (const sig of signals) {
-    if (hasBehavioral && sig.category === 'enrichment' && sig.severity === 'LOW') continue
-    const rank = severityRank[sig.severity] ?? 1
-    if (rank > finalSeverityRank) finalSeverityRank = rank
+  // ── Severity: behavioral base, enrichment boosts max 1 level ──────────────
+  const baseSeverityRank = hasBehavioral
+    ? Math.max(...sortedBehavioral.map(s => severityRank[s.severity] ?? 1))
+    : (severityRank[dominant.severity] ?? 1)
+
+  let finalSeverityRank = baseSeverityRank
+  if (enrichmentSignals.length > 0) {
+    const maxEnrichRank = Math.max(...enrichmentSignals.map(s => severityRank[s.severity] ?? 1))
+    finalSeverityRank = Math.min(baseSeverityRank + 1, Math.max(baseSeverityRank, maxEnrichRank))
   }
+  finalSeverityRank = Math.min(finalSeverityRank, 4)
 
-  const severityByRank = { 4: 'CRITICAL', 3: 'HIGH', 2: 'MEDIUM', 1: 'LOW' }
-  const finalSeverity = severityByRank[finalSeverityRank] ?? 'LOW'
+  const finalSeverity  = severityByRank[finalSeverityRank] ?? 'LOW'
   const assetIsCritical = signals.some(s => s.category === 'asset' && ['CRITICAL','HIGH'].includes(s.severity))
 
   const classificationMap = {
@@ -545,26 +614,55 @@ function aggregateSignals(signals, parseQuality = 'structured') {
     ENRICHMENT_CONFIRMED_MALICIOUS: 'Connection from Known Malicious IP',
     ENRICHMENT_SUSPICIOUS: 'Connection from Suspicious IP',
     ENRICHMENT_CLEAN: 'Network Connection — Clean Source',
+    ACS_AUTH_FAILURE_LOW:              'SSH Authentication Failure',
+    ACS_AUTH_FAILURE_HIGH:             'Repeated SSH Authentication Failure',
+    ACS_AUTH_FAILURE_MASS:             'Mass Authentication Attack',
+    ACS_PRIVILEGE_ACTION:              'Privilege Escalation Detected',
+    ACS_REMOTE_DOWNLOAD:               'Remote File Download via Command Line',
+    ACS_BASE64_EXECUTION:              'Obfuscated Command Execution',
+    ACS_SUDO_SHELL:                    'Privilege Abuse via Sudo Shell',
+    ACS_CLOUD_PRIVILEGE_ESCALATION:    'Cloud IAM Privilege Escalation',
+    ACS_CLOUD_ROLE_ASSUMPTION_FAIL:    'Cloud Role Assumption Failure',
+    ACS_PARTIAL_DETECTION:             'Partial Detection — Unknown Log Format',
   }
 
-  const topBehavioral = sorted.find(s => s.category === 'behavioral' || s.category === 'frequency')
-  const classification = topBehavioral ? (classificationMap[topBehavioral.rule] ?? 'UNKNOWN') : (classificationMap[dominant.rule] ?? 'UNKNOWN')
-  const deterministicMitre = sorted.find(s => s.mitre)?.mitre ?? null
+  // Classification priority: event-specific behavioral > campaign/frequency > enrichment
+  // Campaign signals define severity but should not override event-specific classification
+  const eventBehavioral = sortedBehavioral.find(s => s.category === 'behavioral')
+  const campaignBehavioral = sortedBehavioral.find(s => s.category === 'frequency')
+  const topEnrichment = sortedEnrichment.find(s => s.category !== 'asset' && s.category !== 'frequency')
 
-  const top3 = sorted.slice(0, 3)
+  // Prefer event-specific behavioral signal for classification
+  // Fall back to campaign if no event-specific signal exists
+  const classificationSource = eventBehavioral ?? campaignBehavioral ?? topEnrichment ?? dominant
+  const classification = classificationMap[classificationSource?.rule] ?? 'UNKNOWN'
+  const deterministicMitre = [...sortedBehavioral, ...sortedEnrichment].find(s => s.mitre)?.mitre ?? null
+
+  // ── Confidence: behavioral base + capped enrichment boost ─────────────────
+  const top3 = (sortedBehavioral.length > 0 ? sortedBehavioral : sortedEnrichment).slice(0, 3)
   const baseConfidence = top3.reduce((sum, s) => sum + s.confidence * s.weight, 0) / Math.max(top3.reduce((sum, s) => sum + s.weight, 0), 1)
-  const campaignBonus = signals.some(s => s.rule === 'ACTIVE_CAMPAIGN') ? 10 : 0
+  const eventidBoost   = Math.min(enrichmentSignals.reduce((max, s) => Math.max(max, s.confidence_boost ?? 0), 0), 15)
+  const campaignBonus  = signals.some(s => s.rule === 'ACTIVE_CAMPAIGN') ? 10 : 0
   const unknownPenalty = classification === 'UNKNOWN' ? -20 : 0
-  const parseBonus = parseQuality === 'structured' ? 10 : parseQuality === 'partial' ? 0 : -10
-  const finalConfidence = Math.round(Math.max(0, Math.min(100, baseConfidence + parseBonus + campaignBonus + unknownPenalty)))
+  const parseBonus     = parseQuality === 'structured' ? 10 : parseQuality === 'partial' ? 0 : -10
+  const finalConfidence = Math.round(Math.max(0, Math.min(100, baseConfidence + parseBonus + campaignBonus + unknownPenalty + eventidBoost)))
+
+  // ── Layer summary ──────────────────────────────────────────────────────────
+  const layer_summary = {
+    behavioral:      sortedBehavioral.length,
+    enrichment:      enrichmentSignals.length,
+    dominant_layer:  hasBehavioral ? 'behavioral' : 'enrichment',
+    severity_boosted: finalSeverityRank > baseSeverityRank,
+  }
 
   const decision_trace = [
-    { type: 'dominant', label: `${dominant.label}`, category: dominant.category, weight: dominant.weight, confidence: dominant.confidence, rule: dominant.rule },
-    { type: 'severity', label: `${finalSeverity} across ${signals.length} signals`, value: finalSeverity },
-    { type: 'classification', label: classification, rule: topBehavioral?.rule ?? dominant.rule },
-    { type: 'asset', label: `Critical: ${assetIsCritical}`, value: assetIsCritical },
-    { type: 'confidence', label: `${finalConfidence}`, base: Math.round(baseConfidence), campaignBonus, unknownPenalty, parseBonus },
-    ...sorted.slice(1).map(s => ({ type: 'supporting', label: s.label, severity: s.severity, category: s.category, rule: s.rule }))
+    { type: 'dominant',      label: dominant.label, category: dominant.category, weight: dominant.weight, confidence: dominant.confidence, rule: dominant.rule },
+    { type: 'severity',      label: `${finalSeverity} across ${signals.length} signals`, value: finalSeverity },
+    { type: 'classification', label: classification, rule: classificationSource?.rule ?? dominant.rule },
+    { type: 'asset',         label: `Critical: ${assetIsCritical}`, value: assetIsCritical },
+    { type: 'confidence',    label: `${finalConfidence}`, base: Math.round(baseConfidence), campaignBonus, unknownPenalty, parseBonus, eventidBoost },
+    { type: 'layer_summary', label: `behavioral=${layer_summary.behavioral} enrichment=${layer_summary.enrichment} dominant=${layer_summary.dominant_layer}${layer_summary.severity_boosted ? ' [severity boosted]' : ''}`, ...layer_summary },
+    ...[...sortedBehavioral.slice(1), ...sortedEnrichment].map(s => ({ type: 'supporting', label: s.label, severity: s.severity, category: s.category, rule: s.rule, signal_layer: s.signal_layer }))
   ]
 
   return {
@@ -580,7 +678,7 @@ function aggregateSignals(signals, parseQuality = 'structured') {
   }
 }
 
-function buildNarratorPrompt(sanitizedAlert, parsedContext, enrichmentJudgment, redisContext, isActiveCampaign, uniqueAssetCount, frequencyMultiplier, finalVerdict) {
+function buildNarratorPrompt(sanitizedAlert, parsedContext, enrichmentJudgment, redisContext, isActiveCampaign, uniqueAssetCount, frequencyMultiplier, finalVerdict, acsObject = null) {
   return `You are ARBITER's Narrator Layer. A deterministic engine has already produced the final verdict below.
 
 YOUR ROLE IS STRICTLY LIMITED TO:
@@ -600,6 +698,10 @@ decision_trace: ${finalVerdict.decision_trace.slice(0,3).join(' | ')}
 
 ═══ STRUCTURED ALERT DATA ═══
 ALERT TYPE: ${parsedContext.alertType ?? 'Unknown'}
+VENDOR ORIGIN: ${acsObject?.meta?.vendor_origin ?? 'unknown'}
+NORMALIZATION SCORE: ${acsObject?.meta?.normalization_score ?? 0}
+${acsObject?.meta?.vendor_origin === 'linux' ? 'PLATFORM: Linux — use Linux commands (journalctl, grep, awk, systemctl, ss, who, last, ausearch). Do NOT use Windows commands (Get-WinEvent, schtasks, net user).' : ''}
+${acsObject?.meta?.vendor_origin === 'cloudtrail' ? 'PLATFORM: AWS CloudTrail — use AWS CLI commands (aws cloudtrail, aws iam, aws s3). Do NOT use Windows or Linux commands.' : ''}
 RAW ALERT:
 ${sanitizedAlert}
 
@@ -1065,6 +1167,10 @@ function getMitreName(id) {
     'T1078': 'Valid Accounts',
     'T1071.001': 'Application Layer Protocol: Web Protocols',
     'T1136.001': 'Create Account: Local Account',
+    'T1027':     'Obfuscated Files or Information',
+    'T1548.003': 'Abuse Elevation Control Mechanism: Sudo',
+    'T1098':     'Account Manipulation',
+    'T1078.004': 'Valid Accounts: Cloud Accounts',
   }
   return names[id] ?? id
 }
@@ -1092,6 +1198,17 @@ function getClassificationMitre(classification) {
     'Connection from Known Malicious IP':    { id: 'T1071.001', tactic: 'Command and Control' },
     'Suspicious Account Creation':           { id: 'T1136.001', tactic: 'Persistence' },
     'New Account Creation':                  { id: 'T1136.001', tactic: 'Persistence' },
+    'ACS Partial Detection':                 { id: 'T0000',     tactic: 'Unknown' },
+    'SSH Authentication Failure':            { id: 'T1110.001', tactic: 'Credential Access' },
+    'Repeated SSH Authentication Failure':   { id: 'T1110.001', tactic: 'Credential Access' },
+    'Mass Authentication Attack':            { id: 'T1110.001', tactic: 'Credential Access' },
+    'Privilege Escalation Detected':         { id: 'T1078',     tactic: 'Defense Evasion' },
+    'Remote File Download via Command Line': { id: 'T1105',     tactic: 'Command and Control' },
+    'Obfuscated Command Execution':          { id: 'T1027',     tactic: 'Defense Evasion' },
+    'Privilege Abuse via Sudo Shell':        { id: 'T1548.003', tactic: 'Privilege Escalation' },
+    'Cloud IAM Privilege Escalation':        { id: 'T1098',     tactic: 'Privilege Escalation' },
+    'Cloud Role Assumption Failure':         { id: 'T1078.004', tactic: 'Defense Evasion' },
+    'Partial Detection — Unknown Log Format': { id: 'T0000',    tactic: 'Unknown' },
   }
   return map[classification] ?? null
 }
@@ -1185,7 +1302,7 @@ export async function POST(request) {
         const isActiveCampaign    = (frequencyMultiplier >= 2 && uniqueAssetCount >= 2) || maxRedisCount >= 3
         const enrichmentJudgment  = buildEnrichmentJudgment(enrichment, ips, frequencyMultiplier)
 
-        const signals      = getSignals(parsedAlert, enrichmentJudgment, redisHits)
+        const signals      = getSignals(parsedAlert, enrichmentJudgment, redisHits, acsObject)
         let finalVerdict
         try {
           finalVerdict = aggregateSignals(signals, parsedAlert.parseQuality)
@@ -1206,6 +1323,17 @@ export async function POST(request) {
         if (parsedAlert.parseQuality === 'partial') {
           finalVerdict.confidence = Math.max(0, finalVerdict.confidence - 25)
           finalVerdict.decision_trace.push({ type: 'penalty', label: 'Parse quality PARTIAL — confidence reduced by 25', value: -25 })
+        }
+        const normScore = acsObject?.meta?.normalization_score ?? null
+        if (normScore !== null) {
+          let normAdj = 0
+          if (normScore < 0.3)      normAdj = -30
+          else if (normScore < 0.5) normAdj = -15
+          else if (normScore >= 0.9) normAdj = 5
+          if (normAdj !== 0) {
+            finalVerdict.confidence = Math.max(0, Math.min(100, finalVerdict.confidence + normAdj))
+            finalVerdict.decision_trace.push({ type: 'penalty', label: `Normalization score ${normScore} — confidence ${normAdj > 0 ? '+' : ''}${normAdj}`, value: normAdj, normalizationScore: normScore })
+          }
         }
         const failedSourceCount = enrichmentHealth.noIp ? 0 : (enrichmentHealth.failed ?? []).length
         if (failedSourceCount > 0) {
@@ -1240,7 +1368,8 @@ export async function POST(request) {
                 isActiveCampaign,
                 uniqueAssetCount,
                 frequencyMultiplier,
-                finalVerdict
+                finalVerdict,
+                acsObject
               )
             }
           ]
@@ -1311,6 +1440,9 @@ export async function POST(request) {
               const first = parsedAlert.allAssets.split(',')[0]?.trim()
               if (first && first !== 'UNKNOWN') return first
             }
+            // Priority 1b: ACS normalizer extracted host
+            const acsHost = acsObject?.acs_data?.host
+            if (acsHost && acsHost !== 'UNKNOWN' && acsHost.length > 0) return acsHost
             // Priority 2: regex scan of raw alert text for computer/hostname patterns
             const computerPatterns = [
               /(?:Computer|ComputerName|Hostname|Workstation)[:\s=]+([A-Za-z0-9][A-Za-z0-9\-_.]{2,30})/i,
@@ -1479,9 +1611,13 @@ export async function POST(request) {
             deterministicOverrides:   finalVerdict.decision_trace,
             decisionTrace:            finalVerdict.decision_trace,
             deterministicMitre:       finalVerdict.deterministicMitre,
-            signals:                  (finalVerdict.signals ?? []).map(s => ({ rule: s.rule, label: s.label, severity: s.severity, category: s.category, ...(s.mitre ? { mitre: s.mitre } : {}) })),
+            signals:                  (finalVerdict.signals ?? []).map(s => ({ rule: s.rule, label: s.label, severity: s.severity, category: s.category, signal_layer: s.signal_layer, ...(s.mitre ? { mitre: s.mitre } : {}) })),
             correlationPatterns:      redisPatterns,
             acs:                      acsObject,
+            normalizationScore:       acsObject?.meta?.normalization_score ?? null,
+            vendorOrigin:             acsObject?.meta?.vendor_origin ?? 'unknown',
+            behavioralSignalCount:    (finalVerdict.signals ?? []).filter(s => s.signal_layer === 'behavioral').length,
+            enrichmentSignalCount:    (finalVerdict.signals ?? []).filter(s => s.signal_layer === 'enrichment').length,
           }
         })
 

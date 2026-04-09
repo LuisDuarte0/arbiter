@@ -42,7 +42,7 @@ export function mapLinux(text) {
       src_port:     get(/port\s+(\d+)/i) ? parseInt(get(/port\s+(\d+)/i), 10) : null,
       dest_ip:      null,
       dest_port:    null,
-      host:         get(/^\w+\s+(\S+)\s+/),
+      host:         get(/^\w{3}\s+\d+\s+[\d:]+\s+(\S+)\s+/),
       resource:     null,
       command_line: get(/COMMAND=(.+)$/m),
       process_name: get(/^\w+\s+\S+\s+(\S+)\[/),

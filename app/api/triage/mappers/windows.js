@@ -46,7 +46,7 @@ export function mapWindows(text, parsedFields) {
       event_outcome: eventId ? (EVENT_OUTCOME_MAP[eventId] ?? 'unknown') : 'unknown',
       action:       eventId ? (EVENT_ACTION_MAP[eventId] ?? 'unknown') : 'unknown',
       user:         parsedFields.username ?? null,
-      src_ip:       parsedFields.srcIp ?? null,
+      src_ip:       parsedFields.srcIp ?? parsedFields.ipAddress ?? null,
       src_port:     null,
       dest_ip:      null,
       dest_port:    null,

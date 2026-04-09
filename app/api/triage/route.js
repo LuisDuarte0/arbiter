@@ -185,6 +185,9 @@ function parseAlert(text) {
     taskName:      get(['TaskName'], /TaskName[=:\s]+(.+?)(?:\r?\n|$)/i),
     taskContent:   get(['TaskContent'], /TaskContent[=:\s]+(.+?)(?:\r?\n|$)/i),
     objectName:    get(['ObjectName','TargetObject'], /(?:ObjectName|TargetObject)[=:\s]+(.+?)(?:\r?\n|$)/i),
+    srcIp:         get(['IpAddress','SourceNetworkAddress','SourceAddress'], /(?:IpAddress|SourceNetworkAddress|SourceAddress)[=:\s]+(\S+)/i),
+    ipAddress:     get(['IpAddress'], /IpAddress[=:\s]+(\S+)/i),
+    timestamp:     get(['TimeCreated'], /TimeCreated[=:\s]+(\S+)/i),
     alertType:     detectAlertType(text, jsonObj),
     parseQuality:  rawEventId ? 'structured' : 'partial',
   }

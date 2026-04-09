@@ -1,0 +1,199 @@
+.panel {
+  background: var(--bg-panel);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.panelHeader {
+  padding: 13px 16px 11px;
+  border-bottom: 0.5px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  background: var(--bg-panel);
+  z-index: 2;
+}
+
+.panelTitle {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.panelBadge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-bright);
+  border-radius: 3px;
+  padding: 2px 7px;
+}
+
+.section {
+  padding: 14px 16px;
+  border-bottom: 0.5px solid var(--border);
+}
+
+.cardLabel {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 9px;
+}
+
+.ipAddress {
+  font-family: var(--font-mono);
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--red);
+  margin-bottom: 11px;
+  letter-spacing: 0.03em;
+}
+
+.metaList { display: flex; flex-direction: column; gap: 3px; }
+
+.metaRow {
+  display: flex;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 2px 0;
+}
+
+.mk { color: var(--text-muted); }
+.mv { color: var(--text-secondary); }
+.mvBad { color: var(--red); }
+
+.scoreHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.scoreNum {
+  font-family: var(--font-mono);
+  font-size: 36px;
+  font-weight: 600;
+  color: var(--red);
+  line-height: 1;
+}
+
+.scoreDenom {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-muted);
+}
+
+.scoreSub {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.06em;
+  margin-top: 6px;
+}
+
+.bar {
+  height: 4px;
+  background: var(--border-bright);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.barFill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.barRed { background: var(--red); }
+.barAmber { background: var(--amber); }
+
+.vtRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.vtCount {
+  font-family: var(--font-mono);
+  font-size: 17px;
+  font-weight: 500;
+  color: var(--red);
+}
+
+.vtDenom {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  border-radius: 3px;
+  padding: 2px 7px;
+  border: 0.5px solid;
+}
+
+.critical { background: var(--red-15); color: var(--red); border-color: var(--red-40); }
+.high     { background: var(--amber-15); color: var(--amber); border-color: var(--amber-40); }
+.low      { background: var(--gray-15); color: #6B7280; border-color: var(--gray-40); }
+
+.tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tag {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  border-radius: 3px;
+  padding: 3px 8px;
+  border: 0.5px solid;
+  letter-spacing: 0.04em;
+}
+
+.tagDanger {
+  color: var(--red);
+  background: var(--red-15);
+  border-color: var(--red-40);
+}
+
+.noteText {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+.empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 32px;
+}
+
+.emptyText {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: center;
+  letter-spacing: 0.06em;
+  line-height: 1.7;
+}

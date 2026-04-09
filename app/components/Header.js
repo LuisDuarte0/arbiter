@@ -35,22 +35,38 @@ function AboutModal({ onClose }) {
   )
 }
 
-function MitrePanel({ onClose, onMitreFilter }) {
+function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
   const [logs, setLogs] = useState([])
+  const [localRedisInsights, setLocalRedisInsights] = useState(redisInsights)
 
-  useState(() => {
+  useEffect(() => {
     try { setLogs(JSON.parse(localStorage.getItem('arbiter_audit') ?? '[]')) }
     catch { setLogs([]) }
-  })
+  }, [])
+
+  useEffect(() => {
+    async function fetchInsights() {
+      try {
+        const sessionId = sessionStorage.getItem('arbiter_session_id') ?? 'default'
+        const res = await fetch(`/api/redis-insights?sessionId=${sessionId}`)
+        const data = await res.json()
+        setLocalRedisInsights(data)
+      } catch { }
+    }
+    fetchInsights()
+  }, [])
 
   const techniques = {}
   logs.forEach(log => {
     const id = log.triage?.mitre_id
     if (!id) return
-    if (!techniques[id]) techniques[id] = { id, name: log.triage?.mitre_name ?? id, tactic: log.triage?.mitre_tactic ?? '', count: 0, severities: [], assets: [] }
+    if (!techniques[id]) techniques[id] = { id, name: log.triage?.mitre_name ?? id, tactic: log.triage?.mitre_tactic ?? log.triage?.tactic ?? '', count: 0, severities: [], assets: [] }
     techniques[id].count++
     techniques[id].severities.push(log.triage?.severity)
-    if (log.triage?.affected_asset) techniques[id].assets.push(log.triage.affected_asset)
+    const asset = log.triage?.affected_asset
+    if (asset && asset !== 'UNKNOWN' && asset !== '' && asset.trim().length > 0) {
+      techniques[id].assets.push(asset)
+    }
   })
 
   const techList = Object.values(techniques).sort((a, b) => b.count - a.count)
@@ -62,6 +78,9 @@ function MitrePanel({ onClose, onMitreFilter }) {
 
   const assetCounts = {}
   logs.forEach(l => { const a = l.triage?.affected_asset; if (a) assetCounts[a] = (assetCounts[a] ?? 0) + 1 })
+  localRedisInsights?.indicators?.forEach(ind => {
+    ;(ind.assets ?? []).forEach(a => { if (a) assetCounts[a] = (assetCounts[a] ?? 0) + (ind.count ?? 1) })
+  })
   const topAssets = Object.entries(assetCounts).sort((a, b) => b[1] - a[1]).slice(0, 5)
 
   return (
@@ -78,8 +97,17 @@ function MitrePanel({ onClose, onMitreFilter }) {
         </div>
 
         <div style={{ padding: '14px 24px', borderBottom: '0.5px solid var(--border)', display: 'flex', gap: '24px', alignItems: 'center', flexShrink: 0 }}>
+          <div>
+            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.15em', marginBottom: '3px' }}>TOTAL ALERTS</div>
+            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '22px', fontWeight: '600', color: 'var(--text-primary)', lineHeight: 1 }}>{logs.length}</div>
+            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.1em', marginTop: '3px' }}>SESSION</div>
+          </div>
+          <div>
+            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.15em', marginBottom: '3px' }}>CORRELATED</div>
+            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '22px', fontWeight: '600', color: (localRedisInsights?.totalHits ?? 0) > 0 ? 'var(--red)' : 'var(--text-muted)', lineHeight: 1 }}>{localRedisInsights?.totalHits ?? 0}</div>
+            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.1em', marginTop: '3px' }}>REDIS 24H</div>
+          </div>
           {[
-            { label: 'TOTAL ALERTS', value: logs.length, color: 'var(--text-primary)' },
             { label: 'TECHNIQUES', value: techList.length, color: 'var(--amber)' },
             { label: 'CRITICAL', value: totalCritical, color: 'var(--red)' },
             { label: 'HIGH', value: totalHigh, color: '#F59E0B' },
@@ -109,7 +137,8 @@ function MitrePanel({ onClose, onMitreFilter }) {
 
         <div style={{ flex: 1, overflow: 'hidden', display: 'grid', gridTemplateColumns: '1fr 220px' }}>
           <div style={{ overflowY: 'auto', padding: '16px 24px', borderRight: '0.5px solid var(--border)' }}>
-            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--text-muted)', letterSpacing: '0.15em', marginBottom: '12px' }}>DETECTED TECHNIQUES — CLICK TO FILTER HISTORY</div>
+
+            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--text-muted)', letterSpacing: '0.15em', marginBottom: '12px' }}>SESSION ACTIVITY — CLICK TO FILTER HISTORY</div>
             {techList.length === 0 && (
               <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '10px', color: 'var(--text-muted)', textAlign: 'center', paddingTop: '40px' }}>NO DETECTION DATA — RUN ANALYSES TO POPULATE</div>
             )}
@@ -134,6 +163,32 @@ function MitrePanel({ onClose, onMitreFilter }) {
                 </div>
               )
             })}
+
+            <div style={{ marginTop: '24px', paddingTop: '16px', borderTop: '0.5px solid var(--border)' }}>
+              <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--text-muted)', letterSpacing: '0.15em', marginBottom: '8px' }}>CORRELATED INTELLIGENCE (24H)</div>
+              <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--text-muted)', lineHeight: '1.6', marginBottom: '10px', opacity: 0.7 }}>
+                Cross-session memory from Redis — indicators seen across multiple analyses in the last 24 hours.
+              </div>
+              {localRedisInsights?.indicators?.length > 0 ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {localRedisInsights.indicators.slice(0, 8).map((ind, i) => {
+                    const label = ind.key?.startsWith('ip:') ? ind.key.slice(3) : ind.key?.slice(5)
+                    return (
+                      <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '5px 8px', background: ind.count >= 2 ? 'rgba(229,115,115,0.08)' : 'var(--bg-card)', border: '0.5px solid var(--border-bright)', borderRadius: '3px' }}>
+                        <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: ind.count >= 3 ? '#E57373' : 'var(--text-secondary)' }}>{label}</span>
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--text-muted)' }}>{(ind.assets ?? []).join(', ').slice(0, 30)}</span>
+                          <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', fontWeight: '600', color: ind.count >= 3 ? '#E57373' : 'var(--amber)' }}>{ind.count}×</span>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-muted)', textAlign: 'center', padding: '20px 0' }}>NO CORRELATED INTELLIGENCE IN LAST 24H</div>
+              )}
+            </div>
+
           </div>
 
           <div style={{ overflowY: 'auto', padding: '16px' }}>
@@ -156,7 +211,7 @@ function MitrePanel({ onClose, onMitreFilter }) {
   )
 }
 
-export default function Header({ activeId, result, onReset, onMitreFilter }) {
+export default function Header({ activeId, result, onReset, onMitreFilter, redisInsights, onClearHistory }) {
   const [auditOpen,  setAuditOpen]  = useState(false)
   const [mitreOpen,  setMitreOpen]  = useState(false)
   const [aboutOpen,  setAboutOpen]  = useState(false)
@@ -238,8 +293,8 @@ export default function Header({ activeId, result, onReset, onMitreFilter }) {
 
       </header>
 
-      {auditOpen && <AuditLog onClose={() => setAuditOpen(false)} onMitreFilter={onMitreFilter} />}
-      {mitreOpen && <MitrePanel onClose={() => setMitreOpen(false)} onMitreFilter={onMitreFilter} />}
+      {auditOpen && <AuditLog onClose={() => setAuditOpen(false)} onMitreFilter={onMitreFilter} onClearHistory={onClearHistory} />}
+      {mitreOpen && <MitrePanel onClose={() => setMitreOpen(false)} onMitreFilter={onMitreFilter} redisInsights={redisInsights} />}
       {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)} />}
     </>
   )

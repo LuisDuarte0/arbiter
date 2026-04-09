@@ -18,6 +18,15 @@ export default function Home() {
   const [mitreFilter, setMitreFilter]       = useState(null)
   const [indicatorCache, setIndicatorCache] = useState({})
   const [ipFilter, setIpFilter] = useState(null)
+  const [redisInsights, setRedisInsights] = useState(null)
+  const [sessionId, setSessionId] = useState(() => {
+    if (typeof window === 'undefined') return 'server'
+    const existing = sessionStorage.getItem('arbiter_session_id')
+    if (existing) return existing
+    const newId = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    sessionStorage.setItem('arbiter_session_id', newId)
+    return newId
+  })
 
   // Partial state — intel panel populates as soon as enrichment streams in
   const [streamedEnrichment, setStreamedEnrichment] = useState(null)
@@ -29,6 +38,17 @@ export default function Home() {
       setHistory(stored.map(item => ({ ...item, timestamp: new Date(item.timestamp) })))
     } catch {}
   }, [])
+
+  useEffect(() => {
+    async function fetchInsights() {
+      try {
+        const res = await fetch(`/api/redis-insights?sessionId=${sessionId}`)
+        const data = await res.json()
+        setRedisInsights(data)
+      } catch { /* non-blocking */ }
+    }
+    fetchInsights()
+  }, [result])
 
   function handleIpFilter(ip) {
     setIpFilter(ip)
@@ -44,6 +64,23 @@ export default function Home() {
     setStreamedEnrichment(null)
     setStreamedIPs([])
     setLoadingPhase('')
+  }
+
+  function regenerateSession() {
+    const newId = `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    sessionStorage.setItem('arbiter_session_id', newId)
+    setSessionId(newId)
+  }
+
+  function handleClearHistory() {
+    setHistory([])
+    setResult(null)
+    setAlertText('')
+    setActiveId(null)
+    setStreamedEnrichment(null)
+    setStreamedIPs([])
+    setError(null)
+    regenerateSession()
   }
 
   function handleSelectHistory(item) {
@@ -70,7 +107,7 @@ export default function Home() {
       const res = await fetch('/api/triage', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertText }),
+        body: JSON.stringify({ alertText, sessionId }),
       })
 
       if (!res.ok || !res.body) {
@@ -100,8 +137,14 @@ export default function Home() {
 
           const event = eventMatch[1]
           let payload
-          try { payload = JSON.parse(dataMatch[1]) }
-          catch { continue }
+          try {
+            const raw = dataMatch[1]
+            if (!raw || raw.trim() === '') continue
+            payload = JSON.parse(raw)
+          } catch (parseErr) {
+            console.error('[ARBITER] Stream parse error — skipping chunk:', parseErr.message)
+            continue
+          }
 
           if (event === 'status') {
             setLoadingPhase(payload.phase)
@@ -170,6 +213,10 @@ export default function Home() {
             } catch {}
           }
 
+          if (event === 'warning') {
+            console.warn('[ARBITER] Enrichment warning:', payload.message)
+          }
+
           if (event === 'error') {
             throw new Error(payload.message)
           }
@@ -201,7 +248,7 @@ export default function Home() {
 
   return (
     <div className="arb-layout">
-      <Header activeId={activeId} result={result} onReset={handleReset} onMitreFilter={setMitreFilter} />
+      <Header activeId={activeId} result={result} onReset={handleReset} onMitreFilter={setMitreFilter} redisInsights={redisInsights} onClearHistory={handleClearHistory} sessionId={sessionId} />
       <main className={mainClass}>
         <AlertQueue
   history={history}

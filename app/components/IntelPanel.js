@@ -186,7 +186,16 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
                   <div className="arb-card-label" style={{ color: '#E57373', marginBottom: 0 }}>ARBITER MEMORY</div>
                   {result?.meta?.activeCampaign && <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', background: '#E57373', color: '#080C14', borderRadius: '2px', padding: '2px 6px', letterSpacing: '0.1em' }}>ACTIVE CAMPAIGN</span>}
                 </div>
-                {result?.meta?.uniqueAssets > 1 && <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '8px', color: '#E57373', marginBottom: '8px' }}>BLAST RADIUS: {result.meta.uniqueAssets} UNIQUE ASSETS HIT</div>}
+                {(() => {
+                  const redisAssets = result?.meta?.uniqueAssets ?? 0
+                  const traceAssets = result?.meta?.signals?.filter(s => s.category === 'asset').length > 0 ? 1 : 0
+                  const displayCount = Math.max(redisAssets, traceAssets)
+                  return displayCount > 0 ? (
+                    <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '8px', color: '#E57373', marginBottom: '8px' }}>
+                      BLAST RADIUS: {displayCount} UNIQUE ASSET{displayCount !== 1 ? 'S' : ''} HIT
+                    </div>
+                  ) : null
+                })()}
                 {correlation.hits.map((h, i) => {
                   const age = Math.round((Date.now() - h.timestamp) / 60000)
                   const indicator = h.key?.startsWith('ip:') ? `IP ${h.key.slice(3)}` : `User ${h.key?.slice(5)}`

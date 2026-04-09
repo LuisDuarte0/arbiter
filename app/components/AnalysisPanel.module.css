@@ -1,0 +1,330 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  border-right: 0.5px solid var(--border);
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.panelHeader {
+  padding: 13px 22px 11px;
+  border-bottom: 0.5px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  position: sticky;
+  top: 0;
+  background: var(--bg-base);
+  z-index: 2;
+}
+
+.panelTitle {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+.headerRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panelBadge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-bright);
+  border-radius: 3px;
+  padding: 2px 7px;
+}
+
+.badge {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  border-radius: 3px;
+  padding: 2px 7px;
+  border: 0.5px solid;
+}
+
+.critical { background: var(--red-15); color: var(--red); border-color: var(--red-40); }
+.high     { background: var(--amber-15); color: var(--amber); border-color: var(--amber-40); }
+.medium   { background: var(--yellow-15); color: var(--yellow); border-color: var(--yellow-40); }
+.low      { background: var(--gray-15); color: #6B7280; border-color: var(--gray-40); }
+
+.inputBlock {
+  padding: 16px 22px;
+  border-bottom: 0.5px solid var(--border);
+  background: var(--bg-input);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.inputHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.inputLabel {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  color: var(--text-muted);
+}
+
+.inputHint {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.textarea {
+  background: var(--bg-base);
+  border: 0.5px solid var(--border-bright);
+  border-radius: 5px;
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.9;
+  resize: vertical;
+  min-height: 140px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.textarea:focus {
+  border-color: var(--amber-40);
+}
+
+.textarea::placeholder {
+  color: var(--text-muted);
+}
+
+.button {
+  background: var(--amber);
+  color: #080C14;
+  border: none;
+  border-radius: 4px;
+  padding: 11px 20px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.button:hover { opacity: 0.88; }
+.button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.error {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--red);
+  padding: 8px 12px;
+  background: var(--red-15);
+  border: 0.5px solid var(--red-40);
+  border-radius: 4px;
+}
+
+.loadingBlock {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 20px 22px;
+  border-bottom: 0.5px solid var(--border);
+}
+
+.loadingDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--amber);
+  animation: blink 1s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+@keyframes blink {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.2; }
+}
+
+.loadingText {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--amber);
+  letter-spacing: 0.12em;
+}
+
+.output {
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.triageTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding-bottom: 16px;
+  border-bottom: 0.5px solid var(--border);
+}
+
+.cardLabel {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.15em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+
+.clsValue {
+  font-size: 21px;
+  font-weight: 500;
+  color: var(--text-primary);
+  line-height: 1.2;
+  margin-bottom: 5px;
+}
+
+.clsSub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.triageRight {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.confLabel {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--text-muted);
+  letter-spacing: 0.1em;
+  text-align: right;
+  margin-bottom: 2px;
+}
+
+.confValue {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  font-weight: 500;
+  color: var(--amber);
+  text-align: right;
+}
+
+.confBar {
+  width: 80px;
+  height: 3px;
+  background: var(--border-bright);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.confFill {
+  height: 100%;
+  background: var(--amber);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+}
+
+.card {
+  background: var(--bg-card);
+  border: 0.5px solid var(--border-bright);
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+
+.mitreId {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--amber);
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.mitreName {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  margin-bottom: 5px;
+}
+
+.mitreMeta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-secondary);
+}
+
+.assetRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.assetName {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+
+.assetCritical {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--red);
+  background: var(--red-15);
+  border: 0.5px solid var(--red-40);
+  border-radius: 3px;
+  padding: 2px 8px;
+  letter-spacing: 0.06em;
+}
+
+.recList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.recItem {
+  display: flex;
+  gap: 13px;
+}
+
+.recNum {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--amber);
+  min-width: 18px;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.recText {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.55;
+}
+
+.reasoning {
+  background: var(--bg-input);
+  border-left: 2px solid var(--amber);
+  border-radius: 0 5px 5px 0;
+  padding: 14px 16px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  line-height: 1.8;
+}

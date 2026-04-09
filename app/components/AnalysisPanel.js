@@ -14,6 +14,10 @@ function DecisionSignals({ triage, result }) {
     signals.push({ label: 'REDIS: REPEAT', color: '#E57373', bg: 'rgba(229,115,115,0.12)', icon: '↺' })
   if (result?.meta?.activeCampaign)
     signals.push({ label: 'CAMPAIGN ACTIVE', color: '#E57373', bg: 'rgba(229,115,115,0.18)', icon: '🔥' })
+  if ((result?.meta?.correlationPatterns ?? []).some(p => p.type === 'user_multihost'))
+    signals.push({ label: 'USER: MULTI-HOST', color: '#CE93D8', bg: 'rgba(206,147,216,0.12)', icon: '⬡' })
+  if ((result?.meta?.correlationPatterns ?? []).some(p => p.type === 'ip_multitarget'))
+    signals.push({ label: 'IP: MULTI-TARGET', color: '#E57373', bg: 'rgba(229,115,115,0.12)', icon: '⊕' })
 
   const enrichment = result?.enrichment
   const ips = result?.ips ?? []
@@ -38,13 +42,31 @@ function DecisionSignals({ triage, result }) {
     signals.push({ label: `SEV: ${triage.severity}`, color: triage.severity === 'CRITICAL' ? 'var(--red)' : '#F59E0B', bg: triage.severity === 'CRITICAL' ? 'rgba(239,68,68,0.12)' : 'rgba(245,158,11,0.1)', icon: '⚡' })
 
   return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', padding: '8px 22px', borderBottom: '0.5px solid var(--border)', background: 'rgba(255,255,255,0.01)' }}>
-      <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.12em', alignSelf: 'center', marginRight: '4px' }}>DECISION SIGNALS</span>
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', padding: '8px 22px', borderBottom: '0.5px solid var(--border)', background: 'rgba(255,255,255,0.01)', alignItems: 'center' }}>
+      <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.12em', marginRight: '8px', flexShrink: 0, borderRight: '0.5px solid var(--border-bright)', paddingRight: '8px' }}>DECISION SIGNALS</span>
       {signals.map((s, i) => (
         <span key={i} style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', fontWeight: '600', color: s.color, background: s.bg, border: `0.5px solid ${s.color}40`, borderRadius: '2px', padding: '3px 7px', letterSpacing: '0.08em', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
           <span style={{ fontSize: '9px' }}>{s.icon}</span>{s.label}
         </span>
       ))}
+      {result?.meta?.correlated && !(result?.meta?.correlationPatterns?.length > 0) && (result?.meta?.uniqueAssets ?? 0) >= 2 && (
+        <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', fontWeight: '600', color: '#CE93D8', background: 'rgba(206,147,216,0.12)', border: '0.5px solid rgba(206,147,216,0.4)', borderRadius: '2px', padding: '3px 7px', letterSpacing: '0.08em', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+          <span style={{ fontSize: '9px' }}>⬡</span>MULTI-ASSET
+        </span>
+      )}
+      {(result?.meta?.correlationPatterns ?? []).filter(p => p?.type).map((p, i) => {
+        const patternConfig = {
+          user_multihost: { icon: '⬡', color: '#CE93D8', bg: 'rgba(206,147,216,0.12)', border: 'rgba(206,147,216,0.4)', label: `USER: ${p.assets?.length ?? '?'} HOSTS` },
+          ip_multitarget: { icon: '⊕', color: '#E57373', bg: 'rgba(229,115,115,0.12)', border: 'rgba(229,115,115,0.4)', label: `IP: ${p.assets?.length ?? '?'} TARGETS` },
+          user_ip_linked: { icon: '⟳', color: '#F59E0B', bg: 'rgba(245,158,11,0.12)', border: 'rgba(245,158,11,0.4)', label: 'LINKED INDICATORS' },
+        }
+        const cfg = patternConfig[p.type] ?? { icon: '◈', color: 'var(--text-muted)', bg: 'transparent', border: 'rgba(255,255,255,0.1)', label: p.type }
+        return (
+          <span key={`pattern-${i}`} style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', fontWeight: '600', color: cfg.color, background: cfg.bg, border: `0.5px solid ${cfg.border}`, borderRadius: '2px', padding: '3px 7px', letterSpacing: '0.08em', display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+            <span style={{ fontSize: '9px' }}>{cfg.icon}</span>{cfg.label}
+          </span>
+        )
+      })}
     </div>
   )
 }
@@ -86,7 +108,12 @@ const S = {
 }
 
 export default function AnalysisPanel({ alertText, setAlertText, result, loading, loadingPhase, error, onTriage, onReset }) {
-  const triage = result?.triage ?? null
+  const triage        = result?.triage ?? null
+  const decisionTrace = (() => {
+    const raw = result?.meta?.decisionTrace ?? result?.meta?.deterministicOverrides ?? []
+    return raw.filter(e => typeof e === 'object' && e.type)
+  })()
+  const signals       = result?.meta?.signals ?? []
   const [containmentOpen, setContainmentOpen] = useState(false)
 
   const isUrgent = triage?.severity === 'CRITICAL' || triage?.severity === 'HIGH'
@@ -94,7 +121,9 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
   // Parse reasoning into sentences for structured display
   function parseReasoning(text) {
     if (!text) return []
-    return text.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 0)
+    if (typeof text === 'object' && text.text) return parseReasoning(text.text)
+    const str = Array.isArray(text) ? text.join(' ') : String(text)
+    return str.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 0)
   }
 
   const reasoningSentences = parseReasoning(triage?.reasoning)
@@ -187,15 +216,49 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                 {result?.meta?.processingTime && (
                   <><span style={{ color: 'var(--border-bright)' }}>·</span><span style={{ color: 'var(--text-muted)' }}>{(result.meta.processingTime / 1000).toFixed(1)}s</span></>
                 )}
+                {(result?.meta?.signals?.length ?? 0) > 0 && (
+                  <><span style={{ color: 'var(--border-bright)' }}>·</span><span style={{ color: 'var(--text-muted)' }}>{result.meta.signals.length} SIGNAL{result.meta.signals.length !== 1 ? 'S' : ''}</span></>
+                )}
+                {result?.meta?.parseQuality && (
+                  <><span style={{ color: 'var(--border-bright)' }}>·</span>
+                  <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: result.meta.parseQuality === 'structured' ? '#4CAF50' : 'var(--red)', letterSpacing: '0.06em' }}>
+                    {result.meta.parseQuality.toUpperCase()}
+                  </span></>
+                )}
               </div>
             </div>
             <div style={S.verdictRight}>
               <div style={S.confBlock}>
-                <div><span style={S.confBig}>{triage.confidence}</span><span style={S.confUnit}>%</span></div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+                  <span style={S.confBig}>{triage.confidence}</span>
+                  <span style={S.confUnit}>%</span>
+                  {(() => {
+                    const penalties = (result?.meta?.decisionTrace ?? result?.meta?.deterministicOverrides ?? [])
+                      .filter(e => typeof e === 'object' && e.type === 'penalty')
+                    const totalPenalty = penalties.reduce((sum, p) => sum + (p.value ?? 0), 0)
+                    if (totalPenalty >= 0) return null
+                    return (
+                      <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--red)', letterSpacing: '0.04em' }}>
+                        ▼{Math.abs(totalPenalty)}
+                      </span>
+                    )
+                  })()}
+                </div>
                 <div style={S.confLabel}>CONFIDENCE</div>
                 <div style={S.confBarWrap}>
                   <div style={{ height: '100%', background: 'var(--amber)', borderRadius: '1px', width: `${triage.confidence}%` }} />
                 </div>
+                {(() => {
+                  const ct = decisionTrace.find(e => e.type === 'confidence')
+                  if (!ct) return null
+                  return (
+                    <div style={{ marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      {ct.base        != null && <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>BASE <span style={{ color: 'var(--text-secondary)' }}>{ct.base}%</span></div>}
+                      {ct.campaignBonus  != null && <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>CAMPAIGN <span style={{ color: '#E57373' }}>+{ct.campaignBonus}%</span></div>}
+                      {ct.unknownPenalty != null && <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>UNKNOWN <span style={{ color: 'var(--text-muted)' }}>−{ct.unknownPenalty}%</span></div>}
+                    </div>
+                  )
+                })()}
               </div>
             </div>
           </div>
@@ -250,7 +313,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                   <div>
                     <div style={S.sectionLabel}>EVIDENCE</div>
                     <div style={S.evidenceChips}>
-                      {triage.evidence.map((item, i) => {
+                      {(triage.evidence ?? []).map((item, i) => {
                         const eqIdx = item.indexOf('=')
                         const field = eqIdx > -1 ? item.slice(0, eqIdx) : item
                         const val   = eqIdx > -1 ? item.slice(eqIdx + 1) : ''
@@ -280,7 +343,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
             <div style={S.rightCol}>
               <div style={S.actionsLabel}>RECOMMENDED ACTIONS</div>
               <div style={S.stepsList}>
-                {triage.recommendations.map((rec, i) => {
+                {(triage.recommendations ?? []).map((rec, i) => {
                   const prov = triage.recommendation_provenance?.[i]
                   const provColors = { enrichment_confirmed: 'var(--amber)', behavioral_heuristic: '#6B7FD4', account_action: '#E57373', forensic: '#9E9E9E', known_good_override: '#4CAF50' }
                   const provLabels = { enrichment_confirmed: 'CTI', behavioral_heuristic: 'HEURISTIC', account_action: 'ACCOUNT', forensic: 'FORENSIC', known_good_override: 'KNOWN-GOOD' }
@@ -302,6 +365,40 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
               </div>
             </div>
           </div>
+
+          {/* ENGINE DECISION TRACE */}
+          {decisionTrace.length > 0 && (
+            <div style={{ ...S.reasoningSection, marginBottom: 0, paddingBottom: '14px', borderBottom: '0.5px solid var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <div style={S.sectionLabel}>ENGINE DECISION TRACE</div>
+                <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>
+                  {(result?.meta?.signals ?? []).length} SIGNAL{(result?.meta?.signals ?? []).length !== 1 ? 'S' : ''} · {result?.meta?.parseQuality?.toUpperCase() ?? 'UNKNOWN'} PARSE
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {(decisionTrace ?? []).map((e, i) => {
+                  const typeColors = { dominant: 'var(--amber)', severity: 'var(--red)', classification: '#6B7FD4', asset: '#F59E0B', confidence: 'var(--text-muted)', supporting: 'var(--text-muted)', penalty: 'var(--red)' }
+                  if (typeof e === 'string') e = { type: 'supporting', label: e }
+                  if (!e.type) e = { ...e, type: 'supporting' }
+                  const color = typeColors[e.type] ?? 'var(--text-muted)'
+                  return (
+                    <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', padding: e.type === 'dominant' ? '6px 8px' : '2px 0', background: e.type === 'dominant' ? 'rgba(245,158,11,0.08)' : 'transparent', borderRadius: e.type === 'dominant' ? '3px' : '0', borderLeft: e.type === 'dominant' ? '2px solid var(--amber)' : 'none', paddingLeft: e.type === 'dominant' ? '10px' : '0' }}>
+                      <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color, letterSpacing: '0.1em', minWidth: '80px', paddingTop: '1px', textTransform: 'uppercase', opacity: 0.8, fontWeight: e.type === 'dominant' ? '700' : '400' }}>{e.type}</span>
+                      <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: e.type === 'dominant' ? '10px' : '9px', color: e.type === 'dominant' ? 'var(--amber)' : 'var(--text-secondary)', lineHeight: '1.5', flex: 1, fontWeight: e.type === 'dominant' ? '600' : '400' }}>
+                        {e.label}
+                        {e.rule && <span style={{ color: 'var(--text-muted)', fontSize: '8px', fontWeight: '400' }}> [{e.rule}]</span>}
+                        {e.type === 'confidence' && e.base !== undefined && (
+                          <span style={{ color: 'var(--text-muted)', fontSize: '8px' }}> (base={e.base}, campaign=+{e.campaignBonus ?? 0}, parse=+{e.parseBonus ?? 0})</span>
+                        )}
+                      </span>
+                      {e.severity && <span className={`arb-badge arb-${e.severity?.toLowerCase()}`} style={{ fontSize: '7px', flexShrink: 0 }}>{e.severity}</span>}
+                      {e.type === 'penalty' && e.value && <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--red)', flexShrink: 0 }}>{e.value}</span>}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
 
           {/* STRUCTURED REASONING */}
           <div style={S.reasoningSection}>
@@ -325,7 +422,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                 {[
                   { label: 'Triage Ready', ok: true },
                   { label: 'Intel Verified', ok: (result?.ips?.length > 0) },
-                  { label: 'Assets Mapped', ok: !!triage.affected_asset },
+                  { label: 'Assets Mapped', ok: !!(triage.affected_asset && triage.affected_asset !== 'UNKNOWN' && triage.affected_asset !== '') },
                 ].map((item, i) => (
                   <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '3px' }}>
                     <span style={{ color: item.ok ? '#4CAF50' : 'var(--text-muted)', fontSize: '9px' }}>{item.ok ? '✓' : '○'}</span>
@@ -337,24 +434,56 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                 PowerShell · CMD · Investigation · Warnings
               </div>
             </div>
-            <button
-              style={{
-                display: 'flex', alignItems: 'center', gap: '10px',
-                background: isUrgent ? 'var(--red)' : 'var(--amber)',
-                border: 'none', borderRadius: '4px', padding: '9px 18px',
-                cursor: 'pointer', flexShrink: 0,
-                animation: isUrgent ? 'arbBtnPulse 2s ease-in-out infinite' : 'none',
-              }}
-              onClick={() => setContainmentOpen(true)}
-              onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.animation = 'none' }}
-              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.animation = isUrgent ? 'arbBtnPulse 2s ease-in-out infinite' : 'none' }}
-            >
-              <style>{`@keyframes arbBtnPulse { 0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0.4)}50%{box-shadow:0 0 0 6px rgba(239,68,68,0)} }`}</style>
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#080C14" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
-              </svg>
-              <span style={S.containmentBtnLabel}>GENERATE CONTAINMENT PLAYBOOK</span>
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+              {result && (
+                <button
+                  onClick={() => {
+                    const forensic = {
+                      case_id: result?.meta?.alertType ?? 'UNKNOWN',
+                      timestamp: new Date().toISOString(),
+                      severity: triage.severity,
+                      classification: triage.classification,
+                      confidence: triage.confidence,
+                      mitre_id: triage.mitre_id,
+                      mitre_name: triage.mitre_name,
+                      affected_asset: triage.affected_asset,
+                      asset_is_critical: triage.asset_is_critical,
+                      evidence: triage.evidence,
+                      signals: result?.meta?.signals ?? [],
+                      decision_trace: result?.meta?.deterministicOverrides ?? [],
+                      recommendations: triage.recommendations,
+                      enrichment_sources: result?.meta?.enrichmentSources ?? [],
+                      correlated: result?.meta?.correlated ?? false,
+                      parse_quality: result?.meta?.parseQuality ?? 'unknown',
+                    }
+                    navigator.clipboard.writeText(JSON.stringify(forensic, null, 2))
+                  }}
+                  style={{ background: 'none', border: '0.5px solid var(--border-bright)', borderRadius: '3px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono), monospace', fontSize: '8px', letterSpacing: '0.08em', cursor: 'pointer', padding: '6px 10px', whiteSpace: 'nowrap', transition: 'all 0.15s' }}
+                  onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-secondary)'; e.currentTarget.style.borderColor = 'var(--text-muted)' }}
+                  onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.borderColor = 'var(--border-bright)' }}
+                >
+                  ⬡ FORENSIC
+                </button>
+              )}
+              <button
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '10px',
+                  background: isUrgent ? 'var(--red)' : 'var(--amber)',
+                  border: 'none', borderRadius: '4px', padding: '9px 18px',
+                  cursor: 'pointer', flexShrink: 0,
+                  animation: isUrgent ? 'arbBtnPulse 2s ease-in-out infinite' : 'none',
+                }}
+                onClick={() => setContainmentOpen(true)}
+                onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.animation = 'none' }}
+                onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.animation = isUrgent ? 'arbBtnPulse 2s ease-in-out infinite' : 'none' }}
+              >
+                <style>{`@keyframes arbBtnPulse { 0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0.4)}50%{box-shadow:0 0 0 6px rgba(239,68,68,0)} }`}</style>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#080C14" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
+                </svg>
+                <span style={S.containmentBtnLabel}>GENERATE CONTAINMENT PLAYBOOK</span>
+              </button>
+            </div>
           </div>
 
         </div>

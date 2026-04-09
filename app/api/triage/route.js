@@ -515,6 +515,11 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
       }
     }
 
+    // ACCOUNT DELETION — IAM/directory account removal (evidence destruction indicator)
+    if (acs.event_type === 'privilege' && /deleteuser|deleterole|deletegroup/i.test(acs.action ?? '')) {
+      signals.push({ rule: 'ACS_ACCOUNT_DELETION', label: `Account deletion detected: ${acs.action} via ${acsVendor}`, severity: 'HIGH', confidence: 82, weight: 4, evidence: [`event_type=privilege`, `action=${acs.action}`, `user=${acs.user ?? 'unknown'}`, `target=${acsObject?.acs_data?.target_user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1070.001' })
+    }
+
     // PRIVILEGE ESCALATION — sudo, role assumption, policy changes
     if (acs.event_type === 'privilege' && acs.action !== 'unknown') {
       signals.push({ rule: 'ACS_PRIVILEGE_ACTION', label: `Privilege action detected: ${acs.action} via ${acsVendor}`, severity: 'MEDIUM', confidence: 65, weight: 3, evidence: [`event_type=privilege`, `action=${acs.action}`, `user=${acs.user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1078' })
@@ -536,7 +541,7 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
 
     // CLOUD SPECIFIC — IAM and data exfil patterns
     if (acsVendor === 'cloudtrail') {
-      if (acs.action?.includes('putuserpolicy') || acs.action?.includes('attachpolicy')) {
+      if (acs.action?.includes('putuserpolicy') || acs.action?.includes('attachpolicy') || acs.action?.includes('attachuserpolicy') || acs.action?.includes('attachrolepolicy') || acs.action?.includes('putrolepolicy')) {
         signals.push({ rule: 'ACS_CLOUD_PRIVILEGE_ESCALATION', label: 'Cloud IAM privilege escalation detected', severity: 'HIGH', confidence: 85, weight: 4, evidence: [`action=${acs.action}`, `user=${acs.user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1098' })
       }
       if (acs.event_outcome === 'failure' && acs.action?.includes('assume')) {
@@ -623,6 +628,7 @@ function aggregateSignals(signals, parseQuality = 'structured') {
     ACS_SUDO_SHELL:                    'Privilege Abuse via Sudo Shell',
     ACS_CLOUD_PRIVILEGE_ESCALATION:    'Cloud IAM Privilege Escalation',
     ACS_CLOUD_ROLE_ASSUMPTION_FAIL:    'Cloud Role Assumption Failure',
+    ACS_ACCOUNT_DELETION:              'Account Deletion — Potential Evidence Destruction',
     ACS_PARTIAL_DETECTION:             'Partial Detection — Unknown Log Format',
   }
 
@@ -636,7 +642,12 @@ function aggregateSignals(signals, parseQuality = 'structured') {
   // Fall back to campaign if no event-specific signal exists
   const classificationSource = eventBehavioral ?? campaignBehavioral ?? topEnrichment ?? dominant
   const classification = classificationMap[classificationSource?.rule] ?? 'UNKNOWN'
-  const deterministicMitre = [...sortedBehavioral, ...sortedEnrichment].find(s => s.mitre)?.mitre ?? null
+  // MITRE should reflect the event classification, not the dominant severity signal
+  // Use classificationSource signal's MITRE, fall back to any behavioral signal with MITRE
+  const deterministicMitre = classificationSource?.mitre
+    ?? sortedBehavioral.find(s => s.mitre)?.mitre
+    ?? sortedEnrichment.find(s => s.mitre)?.mitre
+    ?? null
 
   // ── Confidence: behavioral base + capped enrichment boost ─────────────────
   const top3 = (sortedBehavioral.length > 0 ? sortedBehavioral : sortedEnrichment).slice(0, 3)
@@ -1189,6 +1200,7 @@ function getClassificationMitre(classification) {
     'Scheduled Task Created':                { id: 'T1053.005', tactic: 'Persistence' },
     'Suspicious Service Installation':       { id: 'T1543.003', tactic: 'Persistence' },
     'Security Log Tampering':                { id: 'T1070.001', tactic: 'Defense Evasion' },
+    'Account Deletion — Potential Evidence Destruction': { id: 'T1070.001', tactic: 'Defense Evasion' },
     'Active Directory Credential Dump':      { id: 'T1003.003', tactic: 'Credential Access' },
     'SAM Database Access':                   { id: 'T1003.002', tactic: 'Credential Access' },
     'LSASS Memory Dump via LOLBin':          { id: 'T1003.001', tactic: 'Credential Access' },
@@ -1440,9 +1452,11 @@ export async function POST(request) {
               const first = parsedAlert.allAssets.split(',')[0]?.trim()
               if (first && first !== 'UNKNOWN') return first
             }
-            // Priority 1b: ACS normalizer extracted host
+            // Priority 1b: ACS normalizer extracted host or CloudTrail target user
             const acsHost = acsObject?.acs_data?.host
             if (acsHost && acsHost !== 'UNKNOWN' && acsHost.length > 0) return acsHost
+            const acsTargetUser = acsObject?.acs_data?.target_user
+            if (acsTargetUser && acsTargetUser.length > 0) return `IAM:${acsTargetUser}`
             // Priority 2: regex scan of raw alert text for computer/hostname patterns
             const computerPatterns = [
               /(?:Computer|ComputerName|Hostname|Workstation)[:\s=]+([A-Za-z0-9][A-Za-z0-9\-_.]{2,30})/i,
@@ -1456,7 +1470,7 @@ export async function POST(request) {
               }
             }
             // Priority 3: use username as host identifier
-            if (parsedAlert.username && parsedAlert.username !== 'system' && !parsedAlert.username.includes('$')) {
+            if (parsedAlert.username && parsedAlert.username !== 'system' && !parsedAlert.username.includes('$') && parsedAlert.username.length > 3) {
               return `HOST:${parsedAlert.username.toUpperCase()}`
             }
             return 'UNKNOWN'

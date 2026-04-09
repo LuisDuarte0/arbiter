@@ -13,10 +13,10 @@ export function mapCloudTrail(text) {
   const action = eventName.toLowerCase() || 'unknown'
 
   const event_type = (() => {
-    if (/^(GetObject|PutObject|DeleteObject)/i.test(eventName)) return 'network'
-    if (/^(AssumeRole|GetSession|CreateUser|DeleteUser)/i.test(eventName)) return 'auth'
-    if (/^(RunInstances|TerminateInstances)/i.test(eventName)) return 'process'
-    if (/^(AttachPolicy|DetachPolicy|PutUserPolicy)/i.test(eventName)) return 'privilege'
+    if (/^(GetObject|PutObject|DeleteObject|ListObjects|HeadObject)/i.test(eventName)) return 'network'
+    if (/^(AssumeRole|GetSessionToken|ConsoleLogin)/i.test(eventName)) return 'auth'
+    if (/^(RunInstances|TerminateInstances|StartInstances|StopInstances)/i.test(eventName)) return 'process'
+    if (/^(AttachUserPolicy|DetachUserPolicy|PutUserPolicy|AttachRolePolicy|DetachRolePolicy|PutRolePolicy|CreateUser|DeleteUser|CreateRole|DeleteRole|AddUserToGroup|RemoveUserFromGroup)/i.test(eventName)) return 'privilege'
     return 'unknown'
   })()
 
@@ -37,7 +37,8 @@ export function mapCloudTrail(text) {
       src_port:     null,
       dest_ip:      null,
       dest_port:    null,
-      host:         obj.recipientAccountId ?? null,
+      host:         obj.recipientAccountId ?? obj.requestParameters?.bucketName ?? null,
+      target_user:  obj.requestParameters?.userName ?? obj.requestParameters?.roleName ?? null,
       resource:     obj.requestParameters?.bucketName ?? obj.requestParameters?.instanceId ?? null,
       command_line: null,
       process_name: obj.eventSource ?? null,

@@ -20,8 +20,9 @@ const FIELD_WEIGHTS = {
 }
 
 function detectVendor(text) {
-  if (/EventCode[=:\s]|Security-Auditing|Microsoft-Windows|EventID/i.test(text)) return 'windows'
-  if (/eventSource.*amazonaws|CloudTrail|eventName.*eventTime/i.test(text)) return 'cloudtrail'
+  // CloudTrail MUST be checked before Windows — CloudTrail JSON contains "eventID" which matches Windows regex
+  if (/eventSource.*amazonaws|CloudTrail|"eventName"\s*:|"eventTime"\s*:|"awsRegion"\s*:/i.test(text)) return 'cloudtrail'
+  if (/EventCode[=:\s]|Security-Auditing|Microsoft-Windows/i.test(text)) return 'windows'
   if (/auth\.log|sshd\[|sudo:|PAM|kernel\[/i.test(text)) return 'linux'
   return 'unknown'
 }

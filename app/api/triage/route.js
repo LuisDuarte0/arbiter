@@ -570,6 +570,54 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
       signals.push({ rule: 'ACS_PRIVILEGE_ACTION', label: `Privilege action detected: ${acs.action} via ${acsVendor}`, severity: 'MEDIUM', confidence: 65, weight: 3, evidence: [`event_type=privilege`, `action=${acs.action}`, `user=${acs.user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1078' })
     }
 
+    // CREDENTIAL-SENSITIVE OBJECT ACCESS — fires without process creation context
+    // Covers LSASS file access, SAM access, cloud IMDS credential theft, shadow/passwd
+    if (acs.resource) {
+      const resource = acs.resource.toLowerCase()
+      const isSensitiveResource = /ntds\.dit|lsass|\/sam$|security-credentials|\.aws\/credentials|\/shadow$|\/passwd$|\/etc\/shadow|\/proc\/\d+\/mem|krbtgt|ntlm|secretsdump/i.test(resource)
+      if (isSensitiveResource && !signals.some(s => s.rule === 'LSASS_DUMP_RUNDLL32' || s.rule === 'NTDS_ACCESS' || s.rule === 'SAM_ACCESS')) {
+        signals.push({
+          rule: 'ACS_OBJECT_ACCESS_SENSITIVE',
+          label: `Sensitive credential resource accessed: ${acs.resource}`,
+          severity: 'HIGH',
+          confidence: 78,
+          weight: 4,
+          evidence: [`event_type=${acs.event_type}`, `resource=${acs.resource}`, `user=${acs.user ?? 'unknown'}`],
+          category: 'behavioral',
+          source: 'acs',
+          signal_layer: 'behavioral',
+          mitre: 'T1003'
+        })
+      }
+    }
+
+    // LATERAL MOVEMENT CANDIDATE — successful network logon from internal source to different host
+    // Flags but does not accuse — enrichment/campaign layer escalates if warranted
+    if (
+      acs.event_type === 'auth' &&
+      acs.event_outcome === 'success' &&
+      (acs.action === 'logon' || acs.action === 'logon_explicit') &&
+      acs.src_ip &&
+      acs.host
+    ) {
+      const isInternalSrc = /^10\.|^172\.(1[6-9]|2\d|3[01])\.|^192\.168\./i.test(acs.src_ip)
+      const srcDiffFromDest = acs.src_ip !== acs.host
+      if (isInternalSrc && srcDiffFromDest) {
+        signals.push({
+          rule: 'ACS_LATERAL_MOVEMENT_CANDIDATE',
+          label: `Internal network logon: ${acs.src_ip} → ${acs.host}`,
+          severity: 'MEDIUM',
+          confidence: 50,
+          weight: 2,
+          evidence: [`event_type=auth`, `event_outcome=success`, `src_ip=${acs.src_ip}`, `host=${acs.host}`],
+          category: 'behavioral',
+          source: 'acs',
+          signal_layer: 'behavioral',
+          mitre: 'T1021'
+        })
+      }
+    }
+
     // SUSPICIOUS DATA ACCESS — cloud storage read on sensitive resources
     if (acs.event_type === 'network' && /getobject|read|download|headobject|listobjects/i.test(acs.action ?? '')) {
       const resource = (acs.resource ?? '').toLowerCase()
@@ -578,11 +626,26 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
       const suspiciousUser = /contractor|temp|tmp|test|intern|vendor|external/i.test(user)
 
       if (sensitiveResource || suspiciousUser) {
-        const severity = sensitiveResource && suspiciousUser ? 'HIGH' : 'MEDIUM'
-        const confidence = sensitiveResource && suspiciousUser ? 82 : 65
+        // Recurrence suppression — if same user seen 3+ times in session
+        // without other malicious indicators, downgrade to LOW to prevent alert fatigue
+        const hasOtherMalicious = signals.some(s => s.rule === 'ENRICHMENT_CONFIRMED_MALICIOUS' || s.rule === 'ENRICHMENT_SUSPICIOUS')
+        // Use combined IP+user Redis count for recurrence — same method as ACS_HIGH_VOLUME_DATA_ACCESS
+        const sessionHitCount = redisHits?.filter(h =>
+          h.key?.includes(`ip:${acs.src_ip}`) || h.key?.includes(`user:${acs.user}`)
+        ).reduce((sum, h) => sum + (h.count ?? 0), 0) ?? 0
+        // Also check if high-volume signal already fired — if so, recurrence is confirmed
+        const highVolumeAlreadyFired = signals.some(s => s.rule === 'ACS_HIGH_VOLUME_DATA_ACCESS')
+        const isRecurring = (sessionHitCount >= 3 || highVolumeAlreadyFired) && !hasOtherMalicious
+
+        const severity = isRecurring ? 'LOW' : (sensitiveResource && suspiciousUser ? 'HIGH' : 'MEDIUM')
+        const confidence = isRecurring ? 35 : (sensitiveResource && suspiciousUser ? 82 : 65)
+        const label = isRecurring
+          ? `Recurring data access pattern: ${acs.action} on ${acs.resource ?? 'unknown'} by ${acs.user ?? 'unknown'} (possible legitimate operation)`
+          : `Suspicious data access: ${acs.action} on ${acs.resource ?? 'unknown resource'} by ${acs.user ?? 'unknown user'}`
+
         signals.push({
           rule: 'ACS_SUSPICIOUS_DATA_ACCESS',
-          label: `Suspicious data access: ${acs.action} on ${acs.resource ?? 'unknown resource'} by ${acs.user ?? 'unknown user'}`,
+          label,
           severity,
           confidence,
           weight: 3,
@@ -602,6 +665,28 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
       }
       if (acs.event_outcome === 'failure' && acs.action?.includes('assume')) {
         signals.push({ rule: 'ACS_CLOUD_ROLE_ASSUMPTION_FAIL', label: 'Failed cloud role assumption attempt', severity: 'MEDIUM', confidence: 70, weight: 3, evidence: [`action=${acs.action}`, `src_ip=${acs.src_ip ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1078.004' })
+      }
+
+      // HIGH VOLUME DATA ACCESS — repeated access to same resource within session
+      if (acs.event_type === 'network' && acs.resource && acs.user) {
+        const redisHitCount = redisHits?.filter(h =>
+          h.key?.includes(`ip:${acs.src_ip}`) || h.key?.includes(`user:${acs.user}`)
+        ).reduce((sum, h) => sum + (h.count ?? 0), 0) ?? 0
+
+        if (redisHitCount >= 3) {
+          signals.push({
+            rule: 'ACS_HIGH_VOLUME_DATA_ACCESS',
+            label: `High-frequency data access: ${acs.user} accessed ${acs.resource} ${redisHitCount}× in session`,
+            severity: 'HIGH',
+            confidence: 75,
+            weight: 3,
+            evidence: [`user=${acs.user}`, `resource=${acs.resource}`, `session_count=${redisHitCount}`],
+            category: 'behavioral',
+            source: 'acs',
+            signal_layer: 'behavioral',
+            mitre: 'T1530'
+          })
+        }
       }
     }
 
@@ -711,6 +796,9 @@ function aggregateSignals(signals, parseQuality = 'structured') {
     ACS_CLOUD_PRIVILEGE_ESCALATION:    'Cloud IAM Privilege Escalation',
     ACS_CLOUD_ROLE_ASSUMPTION_FAIL:    'Cloud Role Assumption Failure',
     ACS_SUSPICIOUS_DATA_ACCESS:        'Suspicious Cloud Data Access',
+    ACS_OBJECT_ACCESS_SENSITIVE:       'Credential Resource Access',
+    ACS_LATERAL_MOVEMENT_CANDIDATE:   'Lateral Movement Candidate',
+    ACS_HIGH_VOLUME_DATA_ACCESS:       'High-Volume Cloud Data Access',
     ACS_ACCOUNT_DELETION:              'Account Deletion — Potential Evidence Destruction',
     ACS_PARTIAL_DETECTION:             'Partial Detection — Unknown Log Format',
   }
@@ -1316,6 +1404,8 @@ function getMitreName(id) {
     'T1098':     'Account Manipulation',
     'T1078.004': 'Valid Accounts: Cloud Accounts',
     'T1530':     'Data from Cloud Storage',
+    'T1003':     'OS Credential Dumping',
+    'T1021':     'Remote Services',
   }
   return names[id] ?? id
 }
@@ -1355,6 +1445,9 @@ function getClassificationMitre(classification) {
     'Cloud IAM Privilege Escalation':        { id: 'T1098',     tactic: 'Privilege Escalation' },
     'Cloud Role Assumption Failure':         { id: 'T1078.004', tactic: 'Defense Evasion' },
     'Suspicious Cloud Data Access':          { id: 'T1530',     tactic: 'Collection' },
+    'Credential Resource Access':            { id: 'T1003',     tactic: 'Credential Access' },
+    'Lateral Movement Candidate':            { id: 'T1021',     tactic: 'Lateral Movement' },
+    'High-Volume Cloud Data Access':         { id: 'T1530',     tactic: 'Collection' },
     'Partial Detection — Unknown Log Format': { id: 'T0000',    tactic: 'Unknown' },
   }
   return map[classification] ?? null

@@ -56,6 +56,8 @@ export function mapWindows(text, parsedFields) {
       parent_process: parsedFields.parentProcess ?? null,
       process_name:   parsedFields.processName ?? null,
       count:          parsedFields.count ? parseInt(parsedFields.count, 10) : null,
+      object_name:    parsedFields.objectName ?? null,
+      logon_type:     parsedFields.logonType ?? null,
     }
   }
 

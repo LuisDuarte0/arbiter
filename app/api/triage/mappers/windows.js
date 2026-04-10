@@ -58,6 +58,8 @@ export function mapWindows(text, parsedFields) {
       count:          parsedFields.count ? parseInt(parsedFields.count, 10) : null,
       object_name:    parsedFields.objectName ?? null,
       logon_type:     parsedFields.logonType ?? null,
+      target_user:    parsedFields.targetUsername ?? null,
+      task_content:   parsedFields.taskContent ?? null,
     }
   }
 

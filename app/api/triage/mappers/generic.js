@@ -15,14 +15,21 @@ export function mapGeneric(text) {
       event_type:   'unknown',
       event_outcome: 'unknown',
       action:       'unknown',
-      user:         get(/(?:user|username|account)[=:\s]+(\S+)/i),
-      src_ip:       get(/(?:src|source|from)[=:\s]+([\d.]+)/i),
+      user:         get(/(?:user_?name|account|actor|USER|USERNAME)[=:\s]+([A-Za-z0-9._@-]+)/i),
+      src_ip:       get(/(?:src_ip|source_ip|sourceip|src|source|from|SOURCE_IP|SRC_IP)[=:\s]+([\d.]+)/i),
       src_port:     null,
-      dest_ip:      get(/(?:dst|dest|to)[=:\s]+([\d.]+)/i),
+      dest_ip:      get(/(?:dst_ip|dest_ip|destip|dst|dest|to|DEST_IP|DST_IP)[=:\s]+([\d.]+)/i),
       dest_port:    null,
-      host:         get(/(?:host|hostname|computer)[=:\s]+(\S+)/i),
+      host:         get(/(?:host|hostname|computer|HOSTNAME|HOST)[=:\s]+(\S+)/i),
       resource:     null,
-      command_line: null,
+      command_line: (() => {
+        const sudoCmd = get(/COMMAND=(.+)$/m)
+        const cronCmd = get(/CMD\s+\((.+)\)$/m)
+        const genericCmd = get(/CMD=(.+)$/m)
+        const quotedCmd = get(/(?:command|cmd|exec|execute|process)[=:\s]+"([^"]+)"/im)
+        const unquotedCmd = get(/(?:command|cmd|exec|execute|process)[=:\s]+([^\s;|&]+(?:\s+[^\s;|&]+)*)/im)
+        return sudoCmd ?? cronCmd ?? genericCmd ?? quotedCmd ?? unquotedCmd ?? null
+      })(),
       process_name: null,
     }
   }

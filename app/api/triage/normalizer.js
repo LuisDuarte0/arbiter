@@ -23,7 +23,7 @@ function detectVendor(text) {
   // CloudTrail MUST be checked before Windows — CloudTrail JSON contains "eventID" which matches Windows regex
   if (/eventSource.*amazonaws|CloudTrail|"eventName"\s*:|"eventTime"\s*:|"awsRegion"\s*:/i.test(text)) return 'cloudtrail'
   if (/EventCode[=:\s]|Security-Auditing|Microsoft-Windows/i.test(text)) return 'windows'
-  if (/auth\.log|sshd\[|sudo:|PAM|kernel\[/i.test(text)) return 'linux'
+  if (/sshd\[|auth\.log|sudo:|PAM|kernel\[|Failed password|Accepted (password|publickey)|CRON\[|crond\[|systemd\[|auditd\[|su\[|login\[/i.test(text)) return 'linux'
   return 'unknown'
 }
 

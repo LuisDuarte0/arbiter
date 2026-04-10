@@ -144,7 +144,7 @@ function parseAlert(text) {
 
   const rawUsername = get(
     ['TargetUserName','SubjectUserName','Username','User','user_name','actor'],
-    /(?:User Name|TargetUserName|SubjectUserName|Username|User)[=:\s]+(\S+)/i
+    /(?:User Name|TargetUserName|SubjectUserName|Username|User)[=:\s]+([A-Za-z0-9._@\\-]+)/i
   )
   const rawAsset = get(
     ['WorkstationName','ComputerName','Hostname','host','computer','device'],
@@ -164,11 +164,24 @@ function parseAlert(text) {
 
   const rawEventId = get(['EventCode','eventId','event_id','EventID'], /EventCode[=:\s]+(\d+)/i)
 
+  const isCloudTrail = (() => {
+    try {
+      const obj = JSON.parse(text)
+      return !!(obj.eventName && (obj.eventTime || obj.eventSource || obj.awsRegion))
+    } catch { return false }
+  })()
+
+  const isLinux = /sshd\[|auth\.log|sudo:|PAM|kernel\[|Failed password|Accepted (password|publickey)|CRON\[|crond\[|systemd\[|auditd\[|su\[|login\[/i.test(text)
+
+  const cloudTrailEventName = isCloudTrail ? (() => { try { return JSON.parse(text).eventName } catch { return null } })() : null
+  const cloudTrailUser      = isCloudTrail ? (() => { try { const o = JSON.parse(text); return o.userIdentity?.userName ?? null } catch { return null } })() : null
+  const cloudTrailSrcIp     = isCloudTrail ? (() => { try { return JSON.parse(text).sourceIPAddress ?? null } catch { return null } })() : null
+
   return {
     eventId:       rawEventId,
     logonType:     get(['LogonType','logon_type'], /LogonType[=:\s]+(\d+)/i),
     failureReason: get(['FailureReason','Status'], /(?:FailureReason|Status)[=:\s]+(%%\d+|0x[0-9a-fA-F]+)/i),
-    username:        rawUsername ? normalizeUsername(rawUsername) : null,
+    username:        rawUsername ? normalizeUsername(rawUsername) : (cloudTrailUser ?? null),
     usernameRaw:     rawUsername ?? null,
     targetUsername:  get(['TargetUserName'], /TargetUserName[=:\s]+(\S+)/i),
     domain:        get(['TargetDomainName','Domain'], /(?:TargetDomainName|Domain)[=:\s]+(\S+)/i),
@@ -185,11 +198,14 @@ function parseAlert(text) {
     taskName:      get(['TaskName'], /TaskName[=:\s]+(.+?)(?:\r?\n|$)/i),
     taskContent:   get(['TaskContent'], /TaskContent[=:\s]+(.+?)(?:\r?\n|$)/i),
     objectName:    get(['ObjectName','TargetObject'], /(?:ObjectName|TargetObject)[=:\s]+(.+?)(?:\r?\n|$)/i),
-    srcIp:         get(['IpAddress','SourceNetworkAddress','SourceAddress'], /(?:IpAddress|SourceNetworkAddress|SourceAddress)[=:\s]+(\S+)/i),
+    srcIp:         get(['IpAddress','SourceNetworkAddress','SourceAddress'], /(?:IpAddress|SourceNetworkAddress|SourceAddress|srcIp|ipAddress)[=:\s]+(\S+)/i) ?? cloudTrailSrcIp,
     ipAddress:     get(['IpAddress'], /IpAddress[=:\s]+(\S+)/i),
     timestamp:     get(['TimeCreated'], /TimeCreated[=:\s]+(\S+)/i),
-    alertType:     detectAlertType(text, jsonObj),
-    parseQuality:  rawEventId ? 'structured' : 'partial',
+    cloudTrailEventName,
+    cloudTrailUser,
+    cloudTrailSrcIp,
+    alertType:    isCloudTrail ? 'AWS CloudTrail' : isLinux ? 'Linux Security Event' : rawEventId ? 'Windows Security Event' : 'Generic Log',
+    parseQuality: isCloudTrail ? 'structured' : isLinux ? 'structured' : rawEventId ? 'structured' : 'partial',
   }
 }
 
@@ -262,6 +278,35 @@ function getEnrichmentHealth(enrichment, ips) {
 // Rules enforced regardless of LLM output. LLM cannot violate these.
 function validateAndOverrideTriage(triage, parsedAlert, enrichmentJudgment, redisHits) {
   const overrides = []
+
+  const knownBenignIPs = new Set([
+    '8.8.8.8', '8.8.4.4',                   // Google DNS
+    '1.1.1.1', '1.0.0.1',                   // Cloudflare DNS
+    '9.9.9.9',                               // Quad9 DNS
+    '208.67.222.222', '208.67.220.220',      // OpenDNS
+    '4.2.2.1', '4.2.2.2',                   // Level3 DNS
+    '127.0.0.1', '0.0.0.0',                 // Localhost
+    '255.255.255.255',                       // Broadcast
+  ])
+
+  // Strip recommendations that mention known benign IPs
+  if (Array.isArray(triage.recommendations)) {
+    triage.recommendations = triage.recommendations.map((rec, i) => {
+      const ipMatches = rec.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) ?? []
+      const hasBenignIP = ipMatches.some(ip => knownBenignIPs.has(ip))
+      if (hasBenignIP) {
+        const asset = triage.affected_asset ?? 'AFFECTED_HOST'
+        return [
+          `Isolate ${asset} from the network pending investigation`,
+          `Verify all outbound connections from ${asset} for anomalies`,
+          `Collect raw log files from ${asset} before remediation`,
+          `Escalate indicators to threat intelligence platform for review`,
+          `Preserve network captures from ${asset} for forensic analysis`,
+        ][i] ?? `Investigate ${asset} and escalate if indicators persist`
+      }
+      return rec
+    })
+  }
 
   // 1. Field sync — tactic must equal mitre_tactic
   if (triage.tactic !== triage.mitre_tactic) {
@@ -525,17 +570,28 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
       signals.push({ rule: 'ACS_PRIVILEGE_ACTION', label: `Privilege action detected: ${acs.action} via ${acsVendor}`, severity: 'MEDIUM', confidence: 65, weight: 3, evidence: [`event_type=privilege`, `action=${acs.action}`, `user=${acs.user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1078' })
     }
 
-    // PROCESS EXECUTION WITH COMMAND LINE — cross-vendor LOLBin detection
-    if (acs.event_type === 'process' && acs.command_line) {
-      const cmd = acs.command_line.toLowerCase()
-      if (/wget|curl.*http|bash.*-c.*http|python.*urllib|nc\s+-e|ncat/i.test(cmd)) {
-        signals.push({ rule: 'ACS_REMOTE_DOWNLOAD', label: `Remote download/execution via command line (${acsVendor})`, severity: 'HIGH', confidence: 82, weight: 4, evidence: [`event_type=process`, `command_line=${acs.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1105' })
-      }
-      if (/base64.*decode|echo.*\|.*base64|openssl.*base64/i.test(cmd)) {
-        signals.push({ rule: 'ACS_BASE64_EXECUTION', label: `Base64-encoded command execution (${acsVendor})`, severity: 'HIGH', confidence: 80, weight: 4, evidence: [`command_line=${acs.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1027' })
-      }
-      if (/sudo\s+(bash|sh|python|perl|ruby|php|nc|ncat)/i.test(cmd)) {
-        signals.push({ rule: 'ACS_SUDO_SHELL', label: `Sudo to interactive shell (${acsVendor})`, severity: 'CRITICAL', confidence: 90, weight: 4, evidence: [`command_line=${acs.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1548.003' })
+    // SUSPICIOUS DATA ACCESS — cloud storage read on sensitive resources
+    if (acs.event_type === 'network' && /getobject|read|download|headobject|listobjects/i.test(acs.action ?? '')) {
+      const resource = (acs.resource ?? '').toLowerCase()
+      const user = (acs.user ?? '').toLowerCase()
+      const sensitiveResource = /prod|financial|finance|secure|backup|secret|confidential|private|pii|credential|password|key/i.test(resource)
+      const suspiciousUser = /contractor|temp|tmp|test|intern|vendor|external/i.test(user)
+
+      if (sensitiveResource || suspiciousUser) {
+        const severity = sensitiveResource && suspiciousUser ? 'HIGH' : 'MEDIUM'
+        const confidence = sensitiveResource && suspiciousUser ? 82 : 65
+        signals.push({
+          rule: 'ACS_SUSPICIOUS_DATA_ACCESS',
+          label: `Suspicious data access: ${acs.action} on ${acs.resource ?? 'unknown resource'} by ${acs.user ?? 'unknown user'}`,
+          severity,
+          confidence,
+          weight: 3,
+          evidence: [`event_type=network`, `action=${acs.action}`, `resource=${acs.resource ?? 'unknown'}`, `user=${acs.user ?? 'unknown'}`],
+          category: 'behavioral',
+          source: 'acs',
+          signal_layer: 'behavioral',
+          mitre: 'T1530'
+        })
       }
     }
 
@@ -549,10 +605,32 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
       }
     }
 
-    // GENERIC PARTIAL — signal when we detect something but can't be specific
-    if (acsObject?.meta?.is_generic && normScore < 0.5) {
-      signals.push({ rule: 'ACS_PARTIAL_DETECTION', label: 'Partial normalization — limited behavioral detection', severity: 'LOW', confidence: 30, weight: 1, evidence: [`normalization_score=${normScore}`, `vendor=unknown`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: null })
+  }
+
+  // COMMAND-LINE SIGNALS — lower normScore threshold: command_line extraction is independent of normalization
+  if (acs && acs.command_line && normScore >= 0.2) {
+    const cmd = acs.command_line.toLowerCase()
+
+    if (/wget|curl.*http|bash.*-c.*http|python.*urllib|nc\s+-e|ncat|mshta.*http|certutil.*http|certutil.*-urlcache|bitsadmin.*http|regsvr32.*http|rundll32.*http|wscript.*http/i.test(cmd)) {
+      signals.push({ rule: 'ACS_REMOTE_DOWNLOAD', label: `Remote download/execution via command line (${acsVendor})`, severity: 'HIGH', confidence: 82, weight: 4, evidence: [`command_line=${acs.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1105' })
     }
+
+    if (/base64.*decode|echo.*\|.*base64|openssl.*base64|base64\s+-d/i.test(cmd)) {
+      signals.push({ rule: 'ACS_BASE64_EXECUTION', label: `Base64-encoded command execution (${acsVendor})`, severity: 'HIGH', confidence: 80, weight: 4, evidence: [`command_line=${acs.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1027' })
+    }
+
+    const isSudoContext = acsVendor === 'linux' && (acs.action === 'privilege_escalation' || acs.action === 'command_executed')
+    const shellBinary = /\/(bash|sh|python|perl|ruby|php|nc|ncat)\s*$|sudo\s+(bash|sh|python|perl|ruby|php|nc|ncat)/i.test(cmd)
+    if (isSudoContext && shellBinary) {
+      signals.push({ rule: 'ACS_SUDO_SHELL', label: `Sudo to interactive shell (${acsVendor})`, severity: 'CRITICAL', confidence: 90, weight: 4, evidence: [`command_line=${acs.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1548.003' })
+    }
+  }
+
+  // PARTIAL DETECTION — outside normScore guard, fires on generic low-confidence normalization
+  // Suppressed when a strong behavioral signal (weight >= 3) already exists — avoid noise
+  const hasStrongBehavioralSignal = signals.some(s => s.signal_layer === 'behavioral' && (s.weight ?? 0) >= 3)
+  if (acsObject?.meta?.is_generic && normScore < 0.5 && !hasStrongBehavioralSignal) {
+    signals.push({ rule: 'ACS_PARTIAL_DETECTION', label: 'Partial normalization — limited behavioral detection', severity: 'LOW', confidence: 30, weight: 1, evidence: [`normalization_score=${normScore}`, `vendor=unknown`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: null })
   }
 
   return signals
@@ -593,7 +671,11 @@ function aggregateSignals(signals, parseQuality = 'structured') {
   }
   finalSeverityRank = Math.min(finalSeverityRank, 4)
 
-  const finalSeverity  = severityByRank[finalSeverityRank] ?? 'LOW'
+  // Severity floor: confirmed malicious IP always elevates to minimum HIGH
+  const hasConfirmedMalicious = signals.some(s => s.rule === 'ENRICHMENT_CONFIRMED_MALICIOUS')
+  const flooredSeverityRank = hasConfirmedMalicious ? Math.max(finalSeverityRank, 3) : finalSeverityRank
+  const finalSeverity = severityByRank[flooredSeverityRank] ?? 'LOW'
+  const severityWasFloored = hasConfirmedMalicious && flooredSeverityRank > finalSeverityRank
   const assetIsCritical = signals.some(s => s.category === 'asset' && ['CRITICAL','HIGH'].includes(s.severity))
 
   const classificationMap = {
@@ -619,8 +701,8 @@ function aggregateSignals(signals, parseQuality = 'structured') {
     ENRICHMENT_CONFIRMED_MALICIOUS: 'Connection from Known Malicious IP',
     ENRICHMENT_SUSPICIOUS: 'Connection from Suspicious IP',
     ENRICHMENT_CLEAN: 'Network Connection — Clean Source',
-    ACS_AUTH_FAILURE_LOW:              'SSH Authentication Failure',
-    ACS_AUTH_FAILURE_HIGH:             'Repeated SSH Authentication Failure',
+    ACS_AUTH_FAILURE_LOW:              'Authentication Failure',
+    ACS_AUTH_FAILURE_HIGH:             'Repeated Authentication Failures',
     ACS_AUTH_FAILURE_MASS:             'Mass Authentication Attack',
     ACS_PRIVILEGE_ACTION:              'Privilege Escalation Detected',
     ACS_REMOTE_DOWNLOAD:               'Remote File Download via Command Line',
@@ -628,6 +710,7 @@ function aggregateSignals(signals, parseQuality = 'structured') {
     ACS_SUDO_SHELL:                    'Privilege Abuse via Sudo Shell',
     ACS_CLOUD_PRIVILEGE_ESCALATION:    'Cloud IAM Privilege Escalation',
     ACS_CLOUD_ROLE_ASSUMPTION_FAIL:    'Cloud Role Assumption Failure',
+    ACS_SUSPICIOUS_DATA_ACCESS:        'Suspicious Cloud Data Access',
     ACS_ACCOUNT_DELETION:              'Account Deletion — Potential Evidence Destruction',
     ACS_PARTIAL_DETECTION:             'Partial Detection — Unknown Log Format',
   }
@@ -638,13 +721,31 @@ function aggregateSignals(signals, parseQuality = 'structured') {
   const campaignBehavioral = sortedBehavioral.find(s => s.category === 'frequency')
   const topEnrichment = sortedEnrichment.find(s => s.category !== 'asset' && s.category !== 'frequency')
 
-  // Prefer event-specific behavioral signal for classification
-  // Fall back to campaign if no event-specific signal exists
-  const classificationSource = eventBehavioral ?? campaignBehavioral ?? topEnrichment ?? dominant
+  // If event-specific behavioral signal is weak (weight < 3) AND campaign/frequency signal
+  // is strong (weight >= 4), campaign defines both severity AND classification
+  // This prevents "Authentication Failure — CRITICAL" when campaign is the real story
+  const eventBehavioralIsWeak = eventBehavioral && (eventBehavioral.weight ?? 0) < 3
+  const campaignIsStrong = campaignBehavioral && (campaignBehavioral.weight ?? 0) >= 4
+  const classificationSource = (eventBehavioralIsWeak && campaignIsStrong)
+    ? campaignBehavioral
+    : eventBehavioral ?? campaignBehavioral ?? topEnrichment ?? dominant
+
+  // Record the classification decision reason in trace
+  const classificationReason = (eventBehavioralIsWeak && campaignIsStrong)
+    ? 'campaign_dominates'
+    : eventBehavioral ? 'event_behavioral'
+    : campaignBehavioral ? 'campaign_behavioral'
+    : topEnrichment ? 'enrichment'
+    : 'dominant'
+
   const classification = classificationMap[classificationSource?.rule] ?? 'UNKNOWN'
-  // MITRE should reflect the event classification, not the dominant severity signal
-  // Use classificationSource signal's MITRE, fall back to any behavioral signal with MITRE
-  const deterministicMitre = classificationSource?.mitre
+  // If classification source is a generic ACS catch-all, prefer the most specific enrichment MITRE
+  const genericAcsRules = ['ACS_PRIVILEGE_ACTION', 'ACS_AUTH_FAILURE_LOW', 'ACS_PARTIAL_DETECTION']
+  const classificationIsGeneric = genericAcsRules.includes(classificationSource?.rule)
+  const specificEnrichmentMitre = sortedEnrichment.find(s => s.mitre && s.rule !== 'ENRICHMENT_CONFIRMED_MALICIOUS' && s.rule !== 'ENRICHMENT_SUSPICIOUS' && s.rule !== 'ENRICHMENT_CLEAN')?.mitre
+
+  const deterministicMitre = (!classificationIsGeneric ? classificationSource?.mitre : null)
+    ?? specificEnrichmentMitre
     ?? sortedBehavioral.find(s => s.mitre)?.mitre
     ?? sortedEnrichment.find(s => s.mitre)?.mitre
     ?? null
@@ -669,7 +770,8 @@ function aggregateSignals(signals, parseQuality = 'structured') {
   const decision_trace = [
     { type: 'dominant',      label: dominant.label, category: dominant.category, weight: dominant.weight, confidence: dominant.confidence, rule: dominant.rule },
     { type: 'severity',      label: `${finalSeverity} across ${signals.length} signals`, value: finalSeverity },
-    { type: 'classification', label: classification, rule: classificationSource?.rule ?? dominant.rule },
+    ...(severityWasFloored ? [{ type: 'floor', label: `Severity elevated to HIGH minimum — confirmed malicious IP present`, rule: 'ENRICHMENT_CONFIRMED_MALICIOUS', from: severityByRank[finalSeverityRank], to: finalSeverity }] : []),
+    { type: 'classification', label: classification, rule: classificationSource?.rule, layer: classificationSource?.signal_layer, reason: classificationReason },
     { type: 'asset',         label: `Critical: ${assetIsCritical}`, value: assetIsCritical },
     { type: 'confidence',    label: `${finalConfidence}`, base: Math.round(baseConfidence), campaignBonus, unknownPenalty, parseBonus, eventidBoost },
     { type: 'layer_summary', label: `behavioral=${layer_summary.behavioral} enrichment=${layer_summary.enrichment} dominant=${layer_summary.dominant_layer}${layer_summary.severity_boosted ? ' [severity boosted]' : ''}`, ...layer_summary },
@@ -711,8 +813,6 @@ decision_trace: ${finalVerdict.decision_trace.slice(0,3).join(' | ')}
 ALERT TYPE: ${parsedContext.alertType ?? 'Unknown'}
 VENDOR ORIGIN: ${acsObject?.meta?.vendor_origin ?? 'unknown'}
 NORMALIZATION SCORE: ${acsObject?.meta?.normalization_score ?? 0}
-${acsObject?.meta?.vendor_origin === 'linux' ? 'PLATFORM: Linux — use Linux commands (journalctl, grep, awk, systemctl, ss, who, last, ausearch). Do NOT use Windows commands (Get-WinEvent, schtasks, net user).' : ''}
-${acsObject?.meta?.vendor_origin === 'cloudtrail' ? 'PLATFORM: AWS CloudTrail — use AWS CLI commands (aws cloudtrail, aws iam, aws s3). Do NOT use Windows or Linux commands.' : ''}
 RAW ALERT:
 ${sanitizedAlert}
 
@@ -739,6 +839,39 @@ Return ONLY a JSON object. No markdown, no backticks, no preamble:
 }
 
 CRITICAL RULES — VIOLATIONS WILL BE CORRECTED BY THE DETERMINISTIC ENGINE:
+
+PLATFORM CONSTRAINT (ABSOLUTE — NO EXCEPTIONS):
+${(() => {
+  const v = acsObject?.meta?.vendor_origin
+  if (v === 'linux') return `This is a LINUX system. You MUST use ONLY Linux commands in recommendations:
+  - journalctl -u sshd, grep, awk, sed, tail
+  - systemctl stop/status, ss -tulpn, who, last, w
+  - ausearch -m USER_LOGIN, aureport
+  - /var/log/auth.log, /var/log/syslog
+  FORBIDDEN: Get-WinEvent, schtasks, net user, PowerShell, wmic, reg query, sc stop`
+  if (v === 'cloudtrail') return `This is AWS CloudTrail. You MUST use ONLY AWS CLI commands in recommendations:
+  - aws cloudtrail lookup-events
+  - aws iam get-user, aws iam list-attached-user-policies
+  - aws iam delete-user-policy, aws iam detach-user-policy
+  - aws s3 ls, aws s3api get-bucket-policy
+  - aws ec2 describe-instances, aws ec2 stop-instances
+  FORBIDDEN: Get-WinEvent, schtasks, net user, PowerShell, journalctl, systemctl`
+  if (v === 'windows') return `This is a WINDOWS system. You MUST use ONLY Windows commands in recommendations:
+  - Get-WinEvent, PowerShell, wmic, reg query
+  - net user, net localgroup, sc stop, schtasks
+  - Invoke-Command, Get-Process, Get-Service
+  FORBIDDEN: journalctl, systemctl, aws cli, kubectl`
+  return `UNKNOWN/GENERIC LOG SOURCE.
+ALL 5 recommendations MUST be platform-agnostic investigation steps:
+- Network-level: block or monitor the source IP at the firewall
+- Identity: verify and disable any mentioned user accounts through your IAM system
+- Evidence: preserve raw log files before any remediation
+- Escalation: forward indicators (IPs, usernames, hashes) to threat intelligence platform
+- Containment: isolate the affected host at the network level if a hostname was identified
+STRICTLY FORBIDDEN: Get-WinEvent, schtasks, net user, PowerShell, journalctl, systemctl, aws, kubectl, any platform-specific command
+Use generic verbs: Isolate, Block, Verify, Preserve, Escalate, Investigate`
+})()}
+
 - Return EXACTLY 5 recommendations. Not 4, not 6. Exactly 5.
 - Every recommendation MUST start with one of: "Run:", "Isolate", "Block", "Collect", "Disable", "Remove", "Terminate"
 - Every recommendation MUST name a specific hostname, username, or IP from the alert data above
@@ -1182,6 +1315,7 @@ function getMitreName(id) {
     'T1548.003': 'Abuse Elevation Control Mechanism: Sudo',
     'T1098':     'Account Manipulation',
     'T1078.004': 'Valid Accounts: Cloud Accounts',
+    'T1530':     'Data from Cloud Storage',
   }
   return names[id] ?? id
 }
@@ -1220,6 +1354,7 @@ function getClassificationMitre(classification) {
     'Privilege Abuse via Sudo Shell':        { id: 'T1548.003', tactic: 'Privilege Escalation' },
     'Cloud IAM Privilege Escalation':        { id: 'T1098',     tactic: 'Privilege Escalation' },
     'Cloud Role Assumption Failure':         { id: 'T1078.004', tactic: 'Defense Evasion' },
+    'Suspicious Cloud Data Access':          { id: 'T1530',     tactic: 'Collection' },
     'Partial Detection — Unknown Log Format': { id: 'T0000',    tactic: 'Unknown' },
   }
   return map[classification] ?? null
@@ -1259,6 +1394,19 @@ export async function POST(request) {
         } catch (acsErr) {
           console.error('[ARBITER/ACS] Normalization failed:', acsErr.message)
           acsObject = null
+        }
+
+        // ACS vendor reconciliation — when ACS normalization is confident, override legacy alertType
+        if (acsObject?.meta?.normalization_score >= 0.7 && acsObject?.meta?.vendor_origin !== 'unknown') {
+          const vendorToAlertType = {
+            windows:    'Windows Security Event',
+            linux:      'Linux Security Event',
+            cloudtrail: 'AWS CloudTrail',
+          }
+          const acsAlertType = vendorToAlertType[acsObject.meta.vendor_origin]
+          if (acsAlertType && parsedAlert.alertType !== acsAlertType) {
+            parsedAlert.alertType = acsAlertType
+          }
         }
 
         const sanitizedAlert = sanitizeAlertText(
@@ -1486,22 +1634,30 @@ export async function POST(request) {
           })(),
           mitre_id: (() => {
             if (finalVerdict.deterministicMitre) return finalVerdict.deterministicMitre
-            if (narrator?.mitre_id && narrator.mitre_id !== 'T0000') return narrator.mitre_id
-            return getClassificationMitre(finalVerdict.classification)?.id ?? 'T0000'
+            const classificationMitre = getClassificationMitre(finalVerdict.classification)?.id
+            if (classificationMitre) return classificationMitre
+            // Only use narrator MITRE if classification is not UNKNOWN
+            if (finalVerdict.classification !== 'UNKNOWN' && narrator?.mitre_id && narrator.mitre_id !== 'T0000') return narrator.mitre_id
+            return null
           })(),
           mitre_name: (() => {
             if (finalVerdict.deterministicMitre) return getMitreName(finalVerdict.deterministicMitre)
-            if (narrator?.mitre_name) return narrator.mitre_name
             const fb = getClassificationMitre(finalVerdict.classification)
-            return fb ? getMitreName(fb.id) ?? finalVerdict.classification : finalVerdict.classification
+            if (fb) return getMitreName(fb.id) ?? finalVerdict.classification
+            if (finalVerdict.classification !== 'UNKNOWN' && narrator?.mitre_name) return narrator.mitre_name
+            return finalVerdict.classification
           })(),
           tactic: (() => {
-            if (narrator?.tactic && narrator.tactic !== 'Unknown') return narrator.tactic
-            return getClassificationMitre(finalVerdict.classification)?.tactic ?? 'Unknown'
+            const classificationTactic = getClassificationMitre(finalVerdict.classification)?.tactic
+            if (classificationTactic) return classificationTactic
+            if (finalVerdict.classification !== 'UNKNOWN' && narrator?.tactic && narrator.tactic !== 'Unknown') return narrator.tactic
+            return 'Unknown'
           })(),
           mitre_tactic: (() => {
-            if (narrator?.mitre_tactic && narrator.mitre_tactic !== 'Unknown') return narrator.mitre_tactic
-            return getClassificationMitre(finalVerdict.classification)?.tactic ?? 'Unknown'
+            const classificationTactic = getClassificationMitre(finalVerdict.classification)?.tactic
+            if (classificationTactic) return classificationTactic
+            if (finalVerdict.classification !== 'UNKNOWN' && narrator?.mitre_tactic && narrator.mitre_tactic !== 'Unknown') return narrator.mitre_tactic
+            return 'Unknown'
           })(),
           recommendations:           Array.isArray(narrator?.recommendations) ? narrator.recommendations : narratorFallback.recommendations,
           recommendation_provenance: narrator?.recommendation_provenance ?? [],
@@ -1591,7 +1747,12 @@ export async function POST(request) {
           ACTIVE_CAMPAIGN: ['Multi-Asset Coordinated Attack'],
           REPEATED_INDICATOR: ['Repeated Malicious Indicator'],
         }
-        const dominantSignalRule = finalVerdict.signals?.[0]?.rule
+        // Use the behavioral dominant signal for sanity check, not signals[0]
+        // signals[0] may be an enrichment signal that doesn't reflect the classification source
+        const dominantSignalRule = (
+          finalVerdict.signals?.find(s => s.signal_layer === 'behavioral' && s.category === 'behavioral')
+          ?? finalVerdict.signals?.[0]
+        )?.rule
         if (dominantSignalRule && signalRuleToClassification[dominantSignalRule]) {
           const allowedClassifications = signalRuleToClassification[dominantSignalRule]
           if (!allowedClassifications.includes(triage.classification)) {

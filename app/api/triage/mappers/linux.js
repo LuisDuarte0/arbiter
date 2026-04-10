@@ -4,6 +4,8 @@ export function mapLinux(text) {
   const get = (pattern) => text.match(pattern)?.[1]?.trim() ?? null
 
   const action = (() => {
+    if (/CRON\[/i.test(text) && /CMD/i.test(text)) return 'command_executed'
+    if (/sudo:/i.test(text) && /COMMAND=/i.test(text)) return 'command_executed'
     if (/Failed password/i.test(text)) return 'logon_failed'
     if (/Accepted password|Accepted publickey/i.test(text)) return 'logon'
     if (/sudo:/i.test(text)) return 'privilege_escalation'
@@ -37,15 +39,30 @@ export function mapLinux(text) {
       event_type,
       event_outcome,
       action,
-      user:         get(/(?:for invalid user|for user|by)\s+(\S+)/i) ?? get(/(\w+)\s*:/),
+      user: (() => {
+        const cronUser = text.match(/CRON\[\d+\]:\s*\((\S+)\)/)?.[1]
+        const sudoUser = text.match(/^\S+\s+\S+\s+\S+:\s+(\S+)\s*:/m)?.[1]
+        const sshUser = get(/(?:for invalid user|for user|by)\s+(\S+)/i)
+        const genericUser = get(/(?:user|USER)[=:\s]+(\S+)/i)
+        return cronUser ?? sudoUser ?? sshUser ?? genericUser ?? null
+      })(),
       src_ip:       get(/from\s+([\d.]+)/i),
       src_port:     get(/port\s+(\d+)/i) ? parseInt(get(/port\s+(\d+)/i), 10) : null,
       dest_ip:      null,
       dest_port:    null,
       host:         get(/^\w{3}\s+\d+\s+[\d:]+\s+(\S+)\s+/),
       resource:     null,
-      command_line: get(/COMMAND=(.+)$/m),
+      command_line: (() => {
+        const sudoCmd = get(/COMMAND=(.+)$/m)
+        const cronCmd = get(/CMD\s+\((.+)\)$/m)
+        const genericCmd = get(/CMD=(.+)$/m)
+        return sudoCmd ?? cronCmd ?? genericCmd ?? null
+      })(),
       process_name: get(/^\w+\s+\S+\s+(\S+)\[/),
+      count: (() => {
+        const failureMatches = text.match(/Failed password|authentication failure|Invalid user|FAILED LOGIN/gi)
+        return failureMatches ? failureMatches.length : null
+      })(),
     }
   }
 }

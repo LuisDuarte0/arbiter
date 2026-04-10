@@ -245,6 +245,9 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                   })()}
                 </div>
                 <div style={S.confLabel}>CONFIDENCE</div>
+                <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.06em', marginTop: '3px', textAlign: 'right', lineHeight: '1.4', maxWidth: '80px' }}>
+                  DATA QUALITY<br/>+ SIGNAL STRENGTH
+                </div>
                 <div style={S.confBarWrap}>
                   <div style={{ height: '100%', background: 'var(--amber)', borderRadius: '1px', width: `${triage.confidence}%` }} />
                 </div>
@@ -372,7 +375,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                 <div style={S.sectionLabel}>ENGINE DECISION TRACE</div>
                 <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>
-                  {(result?.meta?.signals ?? []).length} SIGNAL{(result?.meta?.signals ?? []).length !== 1 ? 'S' : ''} · {result?.meta?.parseQuality?.toUpperCase() ?? 'UNKNOWN'} PARSE
+                  {(result?.meta?.signals ?? []).length} SIGNAL{(result?.meta?.signals ?? []).length !== 1 ? 'S' : ''} · {result?.meta?.parseQuality?.toUpperCase() ?? 'UNKNOWN'} PARSE · DETERMINISTIC
                 </span>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
@@ -385,14 +388,14 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                     <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', padding: e.type === 'dominant' ? '6px 8px' : '2px 0', background: e.type === 'dominant' ? 'rgba(245,158,11,0.08)' : 'transparent', borderRadius: e.type === 'dominant' ? '3px' : '0', borderLeft: e.type === 'dominant' ? '2px solid var(--amber)' : 'none', paddingLeft: e.type === 'dominant' ? '10px' : '0' }}>
                       <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color, letterSpacing: '0.1em', minWidth: '80px', paddingTop: '1px', textTransform: 'uppercase', opacity: 0.8, fontWeight: e.type === 'dominant' ? '700' : '400' }}>{e.type}</span>
                       <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: e.type === 'dominant' ? '10px' : '9px', color: e.type === 'dominant' ? 'var(--amber)' : 'var(--text-secondary)', lineHeight: '1.5', flex: 1, fontWeight: e.type === 'dominant' ? '600' : '400' }}>
-                        {e.label}
+                        {e.type === 'penalty' ? e.label.replace(/\s*[+-]?\d+\s*$/, '') : e.label}
                         {e.rule && <span style={{ color: 'var(--text-muted)', fontSize: '8px', fontWeight: '400' }}> [{e.rule}]</span>}
                         {e.type === 'confidence' && e.base !== undefined && (
                           <span style={{ color: 'var(--text-muted)', fontSize: '8px' }}> (base={e.base}, campaign=+{e.campaignBonus ?? 0}, parse=+{e.parseBonus ?? 0})</span>
                         )}
                       </span>
                       {e.severity && <span className={`arb-badge arb-${e.severity?.toLowerCase()}`} style={{ fontSize: '7px', flexShrink: 0 }}>{e.severity}</span>}
-                      {e.type === 'penalty' && e.value && <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--red)', flexShrink: 0 }}>{e.value}</span>}
+                      {e.type === 'penalty' && e.value !== undefined && <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--red)', flexShrink: 0 }}>{e.value > 0 ? `+${e.value}` : e.value}</span>}
                     </div>
                   )
                 })}

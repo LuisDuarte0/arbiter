@@ -1,6 +1,7 @@
 // ── ACS NORMALIZATION CORE ────────────────────────────────────────────────────
 // Merges mapper output, applies defaults, calculates normalization_score.
 // This is the single entry point for all log normalization.
+// All acs_data fields are { value, source } provenance-wrapped objects.
 
 import { mapWindows }    from './mappers/windows.js'
 import { mapLinux }      from './mappers/linux.js'
@@ -8,6 +9,7 @@ import { mapCloudTrail } from './mappers/cloudtrail.js'
 import { mapGeneric }    from './mappers/generic.js'
 
 // Weighted field scores — must sum to 1.0
+// 'resource' is a logical proxy: object_name ?? task_name ?? service_name ?? resource_name
 const FIELD_WEIGHTS = {
   event_type:    0.20,
   event_outcome: 0.15,
@@ -16,7 +18,31 @@ const FIELD_WEIGHTS = {
   user:          0.10,
   timestamp:     0.10,
   host:          0.10,
-  resource:      0.05,
+  resource:      0.05,   // proxy — not a real field; resolved below
+}
+
+const NULL_FIELD = { value: null, source: null }
+
+const ACS_DEFAULTS = {
+  timestamp:     NULL_FIELD,
+  event_type:    { value: 'unknown', source: null },
+  event_outcome: { value: 'unknown', source: null },
+  action:        { value: 'unknown', source: null },
+  user:          NULL_FIELD,
+  src_ip:        NULL_FIELD,
+  src_port:      NULL_FIELD,
+  dest_ip:       NULL_FIELD,
+  dest_port:     NULL_FIELD,
+  host:          NULL_FIELD,
+  object_name:   NULL_FIELD,
+  task_name:     NULL_FIELD,
+  service_name:  NULL_FIELD,
+  resource_name: NULL_FIELD,
+  command_line:  NULL_FIELD,
+  process_name:  NULL_FIELD,
+  count:         NULL_FIELD,
+  logon_type:    NULL_FIELD,
+  target_user:   NULL_FIELD,
 }
 
 function detectVendor(text) {
@@ -27,10 +53,28 @@ function detectVendor(text) {
   return 'unknown'
 }
 
+// Reads .value from a provenance-wrapped field — handles both legacy flat values and wrapped objects
+function fieldValue(f) {
+  if (f === null || f === undefined) return null
+  if (typeof f === 'object' && 'value' in f) return f.value
+  return f  // legacy flat value fallback
+}
+
 function calculateNormalizationScore(acsData) {
+  // Resolve the logical 'resource' proxy
+  const resourceProxy = fieldValue(acsData.object_name)
+    ?? fieldValue(acsData.task_name)
+    ?? fieldValue(acsData.service_name)
+    ?? fieldValue(acsData.resource_name)
+    ?? null
+
   let score = 0
   for (const [field, weight] of Object.entries(FIELD_WEIGHTS)) {
-    const val = acsData[field]
+    if (field === 'resource') {
+      if (resourceProxy !== null && resourceProxy !== 'unknown') score += weight
+      continue
+    }
+    const val = fieldValue(acsData[field])
     if (val !== null && val !== undefined && val !== 'unknown') {
       score += weight
     }
@@ -39,13 +83,7 @@ function calculateNormalizationScore(acsData) {
 }
 
 function applyDefaults(acsData) {
-  const defaults = {
-    timestamp: null, event_type: 'unknown', event_outcome: 'unknown',
-    action: 'unknown', user: null, src_ip: null, src_port: null,
-    dest_ip: null, dest_port: null, host: null, resource: null,
-    command_line: null,
-  }
-  return { ...defaults, ...acsData }
+  return { ...ACS_DEFAULTS, ...acsData }
 }
 
 export function normalize(text, parsedFields = {}) {

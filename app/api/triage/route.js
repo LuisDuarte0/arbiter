@@ -341,25 +341,6 @@ function validateAndOverrideTriage(triage, parsedAlert, enrichmentJudgment, redi
     '255.255.255.255',                       // Broadcast
   ])
 
-  // Strip recommendations that mention known benign IPs
-  if (Array.isArray(triage.recommendations)) {
-    triage.recommendations = triage.recommendations.map((rec, i) => {
-      const ipMatches = rec.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) ?? []
-      const hasBenignIP = ipMatches.some(ip => knownBenignIPs.has(ip))
-      if (hasBenignIP) {
-        const asset = triage.affected_asset ?? 'AFFECTED_HOST'
-        return [
-          `Isolate ${asset} from the network pending investigation`,
-          `Verify all outbound connections from ${asset} for anomalies`,
-          `Collect raw log files from ${asset} before remediation`,
-          `Escalate indicators to threat intelligence platform for review`,
-          `Preserve network captures from ${asset} for forensic analysis`,
-        ][i] ?? `Investigate ${asset} and escalate if indicators persist`
-      }
-      return rec
-    })
-  }
-
   // 1. Field sync — tactic must equal mitre_tactic
   if (triage.tactic !== triage.mitre_tactic) {
     triage.tactic = triage.mitre_tactic
@@ -401,77 +382,6 @@ function validateAndOverrideTriage(triage, parsedAlert, enrichmentJudgment, redi
 
   // 6. Confidence bounds
   triage.confidence = Math.max(0, Math.min(100, Math.round(triage.confidence ?? 50)))
-
-  // 7. Remove RFC 1918 block recommendations
-  if (Array.isArray(triage.recommendations)) {
-    triage.recommendations = triage.recommendations.map((rec, i) => {
-      if (/block.*(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/i.test(rec)) {
-        overrides.push(`rec_${i}_rfc1918_removed`)
-        return 'Isolate affected host from network segment pending investigation.'
-      }
-      return rec
-    })
-  }
-
-  // 8. Remove evidence-destroying commands
-  if (Array.isArray(triage.recommendations)) {
-    triage.recommendations = triage.recommendations.map((rec, i) => {
-      if (/wevtutil.*(clear|cl\b)|del.*\.evtx|Clear-EventLog/i.test(rec)) {
-        overrides.push(`rec_${i}_evidence_destruction_removed`)
-        return 'Preserve all logs — do not clear event logs during active investigation.'
-      }
-      return rec
-    })
-  }
-
-  // GUARANTEE 5 ACTIONABLE RECOMMENDATIONS WITH PROVENANCE
-  const actionablePatterns = [
-    /^Run:/i, /^Isolate/i, /^Block/i, /^Collect/i, /^Disable/i,
-    /^Delete/i, /^Remove/i, /^Terminate/i, /Get-WinEvent/i,
-    /net user/i, /schtasks/i, /sc stop/i, /netstat/i, /Invoke-/i,
-  ]
-
-  const isActionable = (rec) => actionablePatterns.some(p => p.test(rec?.trim() ?? ''))
-
-  const triageAsset = triage.affected_asset ?? 'AFFECTED_HOST'
-  const user        = parsedAlert?.username ?? 'AFFECTED_USER'
-  const evtId       = parsedAlert?.eventId ?? '4688'
-
-  const actionablePool = [
-    { rec: `Run: Get-WinEvent -FilterHashtable @{LogName='Security'; Id=${evtId}} -ComputerName ${triageAsset} | Select -First 50`, prov: 'forensic' },
-    { rec: `Run: net user ${user} /domain /active:no — disable ${user} pending investigation`, prov: 'account_action' },
-    { rec: `Isolate ${triageAsset} from network — active compromise confirmed by deterministic engine`, prov: 'behavioral_heuristic' },
-    { rec: `Collect memory image from ${triageAsset} before shutdown — volatile evidence preservation`, prov: 'forensic' },
-    { rec: `Run: schtasks /query /fo LIST /v on ${triageAsset} — audit all scheduled tasks for persistence`, prov: 'forensic' },
-  ]
-
-  // Replace non-actionable recommendations
-  triage.recommendations = (triage.recommendations ?? []).map((rec, i) => {
-    if (!isActionable(rec)) {
-      overrides.push(`rec_${i}_non_actionable_replaced`)
-      return actionablePool[i]?.rec ?? actionablePool[0].rec
-    }
-    return rec
-  })
-
-  // Pad to exactly 5
-  while (triage.recommendations.length < 5) {
-    const idx = triage.recommendations.length
-    triage.recommendations.push(actionablePool[idx]?.rec ?? actionablePool[0].rec)
-    overrides.push(`rec_${idx}_padded`)
-  }
-
-  // Trim to exactly 5
-  if (triage.recommendations.length > 5) {
-    triage.recommendations = triage.recommendations.slice(0, 5)
-    overrides.push('recommendations_trimmed_to_5')
-  }
-
-  // Guarantee provenance array matches length
-  const defaultProvenance = ['forensic', 'account_action', 'behavioral_heuristic', 'forensic', 'forensic']
-  triage.recommendation_provenance = Array.from({ length: 5 }, (_, i) =>
-    triage.recommendation_provenance?.[i] ?? defaultProvenance[i]
-  )
 
   return { triage, overrides }
 }
@@ -660,7 +570,13 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
       } else if (acsCount > 5) {
         signals.push({ rule: 'ACS_AUTH_FAILURE_HIGH', classification: 'Repeated Authentication Failures', label: `Repeated authentication failures (${acsCount}×) via ${acsVendor}`, severity: 'HIGH', confidence: 75, weight: 3, evidence: [`event_type=auth`, `event_outcome=failure`, `count=${acsCount}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110' })
       } else {
-        signals.push({ rule: 'ACS_AUTH_FAILURE_LOW', classification: 'Authentication Failure', label: `Authentication failure via ${acsVendor}`, severity: 'LOW', confidence: 55, weight: 2, evidence: [`event_type=auth`, `event_outcome=failure`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110' })
+        // ACS_AUTH_FAILURE_LOW fails independence gate on Windows: event_type and event_outcome
+        // both have source 'derived:event_id_table' — not independent. Windows coverage is via
+        // LOGON_FAILURE_LOW (EventID enrichment). On Linux/CloudTrail/generic the two fields
+        // come from different sources so the signal is valid.
+        if (acsVendor !== 'windows' && isValidBehavioralSignal(acs.event_type, acs.event_outcome)) {
+          signals.push({ rule: 'ACS_AUTH_FAILURE_LOW', classification: 'Authentication Failure', label: `Authentication failure via ${acsVendor}`, severity: 'LOW', confidence: 55, weight: 2, evidence: [`event_type=auth`, `event_outcome=failure`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110' })
+        }
       }
     }
 
@@ -828,7 +744,34 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
   return signals
 }
 
-function aggregateSignals(signals, parseQuality = 'structured') {
+function getMitreTactic(mitreId) {
+  if (!mitreId) return null
+  const map = {
+    'T1110': 'Credential Access', 'T1110.001': 'Credential Access', 'T1110.003': 'Credential Access',
+    'T1003': 'Credential Access', 'T1003.001': 'Credential Access', 'T1003.002': 'Credential Access', 'T1003.003': 'Credential Access',
+    'T1078': 'Initial Access', 'T1566': 'Initial Access', 'T1566.001': 'Initial Access',
+    'T1059': 'Execution', 'T1059.001': 'Execution', 'T1059.003': 'Execution',
+    'T1204': 'Execution', 'T1204.002': 'Execution',
+    'T1053': 'Persistence', 'T1053.005': 'Persistence',
+    'T1543': 'Persistence', 'T1543.003': 'Persistence',
+    'T1136': 'Persistence', 'T1136.001': 'Persistence',
+    'T1098': 'Persistence',
+    'T1055': 'Defense Evasion', 'T1070': 'Defense Evasion', 'T1070.001': 'Defense Evasion',
+    'T1218': 'Defense Evasion', 'T1218.005': 'Defense Evasion', 'T1218.011': 'Defense Evasion',
+    'T1027': 'Defense Evasion', 'T1027.010': 'Defense Evasion',
+    'T1105': 'Command and Control',
+    'T1021': 'Lateral Movement', 'T1021.002': 'Lateral Movement', 'T1021.006': 'Lateral Movement',
+    'T1569': 'Execution', 'T1569.002': 'Execution',
+    'T1548': 'Privilege Escalation', 'T1548.002': 'Privilege Escalation',
+    'T1134': 'Privilege Escalation',
+    'T1087': 'Discovery',
+    'T1078.004': 'Privilege Escalation',
+  }
+  const base = mitreId.split('.')[0]
+  return map[mitreId] ?? map[base] ?? null
+}
+
+function aggregateSignals(signals, parseQuality = 'structured', normalizationScore = 0) {
   if (!signals.length) return { severity: 'LOW', classification: 'UNKNOWN', confidence: 20, asset_is_critical: false, evidence: [], decision_trace: ['No rules matched — defaulting to LOW/UNKNOWN'] }
 
   const severityRank   = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 }
@@ -852,13 +795,43 @@ function aggregateSignals(signals, parseQuality = 'structured') {
 
   // Frequency signals (CORRELATED_INDICATOR_ACTIVITY, REPEATED_INDICATOR) define severity context but
   // should not occupy the dominant slot — the dominant slot drives classification label.
-  const nonFrequencyBehavioral = sortedBehavioral.filter(s => !s.frequency)
-  const dominant = nonFrequencyBehavioral[0] ?? sortedBehavioral[0] ?? sortedEnrichment[0] ?? signals[0]
+  // Frequency signals (category === 'frequency', frequency: true) must never occupy the
+  // dominant slot — dominant drives classification label and is shown in the decision trace.
+  const nonFrequencyBehavioral = sortedBehavioral.filter(s =>
+    !s.frequency && s.signal_layer !== 'frequency' && s.category !== 'frequency'
+  )
+  // Exclude asset signals from dominant — they amplify context, they do not detect behavior
+  const behavioralNonFrequency = nonFrequencyBehavioral.filter(s =>
+    (s.signal_layer === 'behavioral' || s.signal_layer === 'enrichment')
+    && s.category !== 'asset'
+  )
+
+  // EventID detection signals — signal_layer='enrichment', category='behavioral'
+  // These live in sortedEnrichment (not sortedBehavioral) due to routing at line 781.
+  // They represent domain-specific detection knowledge (WindowsEventID semantics)
+  // and should rank above pure contextual enrichment (asset, reputation) in dominance.
+  const detectionEnrichment = sortedEnrichment.filter(s =>
+    s.category === 'behavioral'
+    && !s.frequency
+    && s.category !== 'asset'
+  )
+
+  // Fallback chain — priority order:
+  // 1. True behavioral signals (ACS provenance-independent, vendor-agnostic)
+  // 2. Any non-frequency behavioral signal (broader pool)
+  // 3. EventID detection signals (domain-specific but genuine detection)
+  // 4. Any enrichment signal (contextual — ASSET_CRITICAL is last resort)
+  // 5. null → NO_DETECTION / ENRICHMENT_ONLY_VERDICT
+  const dominant = behavioralNonFrequency[0]
+    ?? nonFrequencyBehavioral[0]
+    ?? detectionEnrichment[0]
+    ?? sortedEnrichment[0]
+    ?? null
 
   // ── Severity: behavioral base, enrichment boosts max 1 level ──────────────
   const baseSeverityRank = hasBehavioral
     ? Math.max(...sortedBehavioral.map(s => severityRank[s.severity] ?? 1))
-    : (severityRank[dominant.severity] ?? 1)
+    : (dominant !== null ? (severityRank[dominant.severity] ?? 1) : 1)
 
   let finalSeverityRank = baseSeverityRank
   if (enrichmentSignals.length > 0) {
@@ -914,23 +887,16 @@ function aggregateSignals(signals, parseQuality = 'structured') {
     ACS_PARTIAL_DETECTION:             'Partial Detection — Unknown Log Format',
   }
 
-  // Classification priority: event-specific behavioral > campaign/frequency > enrichment
-  // Campaign signals define severity but should not override event-specific classification
+  // Classification comes ONLY from behavioral signals — frequency signals cannot drive classification.
   const eventBehavioral = sortedBehavioral.find(s => s.category === 'behavioral')
-  const campaignBehavioral = sortedBehavioral.find(s => s.category === 'frequency')
   const topEnrichment = sortedEnrichment.find(s => s.category !== 'asset' && s.category !== 'frequency')
 
-  // If event-specific behavioral signal is weak (weight < 3) AND campaign/frequency signal
-  // is strong (weight >= 4), campaign defines both severity AND classification
-  // This prevents "Authentication Failure — CRITICAL" when campaign is the real story
   const genericAcsRules = ['ACS_PRIVILEGE_ACTION', 'ACS_PARTIAL_DETECTION']
-  const eventBehavioralIsWeak = eventBehavioral && (eventBehavioral.weight ?? 0) < 3
   const eventBehavioralIsGeneric = eventBehavioral && genericAcsRules.includes(eventBehavioral.rule)
-  const campaignIsStrong = campaignBehavioral && (campaignBehavioral.weight ?? 0) >= 4
 
-  // When event behavioral signal is a generic catch-all AND a specific enrichment signal
-  // has its own classification, prefer the enrichment classification
-  // This prevents "Privilege Escalation Detected" from overriding "Security Log Tampering"
+  // When the event behavioral signal is a generic catch-all AND a specific enrichment signal
+  // has its own classification, prefer the enrichment classification.
+  // This prevents "Privilege Escalation Detected" from overriding "Security Log Tampering".
   const specificEnrichment = sortedEnrichment.find(s =>
     s.classification &&
     s.category !== 'asset' &&
@@ -939,18 +905,13 @@ function aggregateSignals(signals, parseQuality = 'structured') {
     s.rule !== 'ENRICHMENT_CLEAN'
   )
 
-  const classificationSource = (eventBehavioralIsWeak && campaignIsStrong)
-    ? campaignBehavioral
-    : (eventBehavioralIsGeneric && specificEnrichment)
+  const classificationSource = (eventBehavioralIsGeneric && specificEnrichment)
     ? specificEnrichment
-    : eventBehavioral ?? campaignBehavioral ?? topEnrichment ?? dominant
+    : eventBehavioral ?? topEnrichment ?? dominant
 
-  const classificationReason = (eventBehavioralIsWeak && campaignIsStrong)
-    ? 'campaign_dominates'
-    : (eventBehavioralIsGeneric && specificEnrichment)
+  const classificationReason = (eventBehavioralIsGeneric && specificEnrichment)
     ? 'enrichment_specific'
     : eventBehavioral ? 'event_behavioral'
-    : campaignBehavioral ? 'campaign_behavioral'
     : topEnrichment ? 'enrichment'
     : 'dominant'
 
@@ -983,7 +944,7 @@ function aggregateSignals(signals, parseQuality = 'structured') {
   }
 
   const decision_trace = [
-    { type: 'dominant',      label: dominant.label, category: dominant.category, weight: dominant.weight, confidence: dominant.confidence, rule: dominant.rule },
+    ...(dominant !== null ? [{ type: 'dominant', label: dominant.label, category: dominant.category, weight: dominant.weight, confidence: dominant.confidence, rule: dominant.rule }] : [{ type: 'dominant', label: 'No non-frequency behavioral signals', category: null, weight: 0, confidence: 0, rule: null }]),
     { type: 'severity',      label: `${finalSeverity} across ${signals.length} signals`, value: finalSeverity },
     ...(severityWasFloored ? [{ type: 'floor', label: `Severity elevated to HIGH minimum — confirmed malicious IP present`, rule: 'ENRICHMENT_CONFIRMED_MALICIOUS', from: severityByRank[finalSeverityRank], to: finalSeverity }] : []),
     { type: 'classification', label: classification, rule: classificationSource?.rule, layer: classificationSource?.signal_layer, reason: classificationReason },
@@ -994,25 +955,35 @@ function aggregateSignals(signals, parseQuality = 'structured') {
   ]
 
   // ── Verdict reliability classification ──────────────────────────────────────
-  // verdictClass: quality of behavioral evidence
-  //   INSUFFICIENT_BEHAVIORAL_EVIDENCE — no behavioral signals or only weight-1 signals
-  //   LOW_CONFIDENCE_VERDICT — behavioral signals present but weak (weight 2) or generic
-  //   DEFENSIBLE_VERDICT — at least one non-generic behavioral signal weight >= 3
-  const nonFreqBehavioral = sortedBehavioral.filter(s => !s.frequency)
-  const strongBehavioral  = nonFreqBehavioral.filter(s => (s.weight ?? 0) >= 3 && !genericAcsRules.includes(s.rule))
-  const verdictClass = strongBehavioral.length > 0
-    ? 'DEFENSIBLE_VERDICT'
-    : nonFreqBehavioral.length > 0
-    ? 'LOW_CONFIDENCE_VERDICT'
-    : 'INSUFFICIENT_BEHAVIORAL_EVIDENCE'
+  const hasBehavioralForVerdict = signals.some(s =>
+    s.signal_layer === 'behavioral' && !s.frequency && s.category !== 'frequency')
 
-  // verdictReliabilityClass: data quality gate
-  //   SURFACE_SAFE — normalization score adequate, at least one independent field pair
-  //   TRACE_REQUIRED — low normalization or generic log — verify before actioning
-  const hasAdequateNorm = (signals.find(s => s.source === 'acs')?.evidence ?? []).length > 0
-  const verdictReliabilityClass = (verdictClass === 'DEFENSIBLE_VERDICT' && hasAdequateNorm)
-    ? 'SURFACE_SAFE'
-    : 'TRACE_REQUIRED'
+  const hasDetectionEnrichment = signals.some(s =>
+    s.signal_layer === 'enrichment' && s.category === 'behavioral')
+
+  const verdictClass = (() => {
+    if (!hasBehavioralForVerdict && !hasDetectionEnrichment) return 'NO_DETECTION'
+    if (!hasBehavioralForVerdict && hasDetectionEnrichment) return 'ENRICHMENT_ONLY_VERDICT'
+    if (normalizationScore < 0.3 || (dominant?.weight ?? 0) < 2) return 'LOW_CONFIDENCE_VERDICT'
+    return 'DEFENSIBLE_VERDICT'
+  })()
+
+  // ENRICHMENT_ONLY_VERDICT is always TRACE_REQUIRED — never surface safe
+  // without vendor-agnostic behavioral evidence
+  const verdictReliabilityClass = (() => {
+    if (verdictClass !== 'DEFENSIBLE_VERDICT') return 'TRACE_REQUIRED'
+    const dominantWeight = dominant?.weight ?? 0
+    const hasSignalContradiction = (() => {
+      const tactics = [...new Set(signals
+        .filter(s => s.mitre)
+        .map(s => getMitreTactic(s.mitre))
+        .filter(Boolean))]
+      return tactics.length >= 3
+    })()
+    if (dominantWeight >= 4 && normalizationScore >= 0.7 && !hasSignalContradiction)
+      return 'SURFACE_SAFE'
+    return 'TRACE_REQUIRED'
+  })()
 
   return {
     severity:                  finalSeverity,
@@ -1035,59 +1006,172 @@ function aggregateSignals(signals, parseQuality = 'structured') {
 // Tokens: {host} {user} {src_ip} — filled at call time from acsObject / triage data.
 
 const RECOMMENDATION_LOOKUP = {
-  // ── Windows EventID ─────────────────────────────────────────────────────────
-  BRUTE_FORCE_EXTREME:             [ 'Block: Source IP {src_ip} at perimeter firewall — extreme brute force volume detected', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4625} -ComputerName {host} | Group-Object -Property Message | Sort Count -Desc | Select -First 20', 'Run: net user {user} /domain — confirm lockout status and reset password if needed', 'Enforce: net accounts /lockoutthreshold:5 /lockoutduration:30 — prevent future brute force', 'Collect: Copy-Item C:\\Windows\\System32\\winevt\\Logs\\Security.evtx to evidence share before remediation' ],
-  BRUTE_FORCE_HIGH:                [ 'Block: Source IP {src_ip} at firewall — high-volume failed logons', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4625} -ComputerName {host} | Select -First 100', 'Run: net user {user} /domain — verify account is not compromised', 'Enforce account lockout policy on {host} — review Group Policy settings', 'Preserve: Export Security event log from {host} before any changes' ],
-  BRUTE_FORCE_MEDIUM:              [ 'Monitor: {src_ip} for continued failed logon attempts', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4625} -ComputerName {host} | Select -Last 50', 'Run: net user {user} — check last logon and password age', 'Review: MFA enrollment status for account {user}', 'Collect: net logonsessions on {host} — identify active sessions' ],
-  LOGON_FAILURE_LOW:               [ 'Investigate: Confirm {user} logon failure was expected (password reset, MFA prompt)', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4625,4624} -ComputerName {host} | Select -First 20', 'Run: net user {user} /domain — check account status', 'Review: Authentication logs for {user} over the last 24 hours', 'Document: Log the event in the incident tracker with low severity' ],
-
-  LOLBIN_CERTUTIL_DOWNLOAD:        [ 'Terminate: Stop the certutil process on {host} immediately — process is downloading a remote payload', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4688} -ComputerName {host} | Where ProcessName -like "*certutil*" | Select -First 20', 'Isolate: {host} from the network to prevent payload execution or C2 callback', 'Remove: Delete any downloaded files in %TEMP%, %USERPROFILE%, %ProgramData%', 'Collect: Memory image from {host} using winpmem before isolating' ],
-  LOLBIN_CERTUTIL_SUSPICIOUS_PATH: [ 'Isolate: {host} from network — certutil staged payload to suspicious path', 'Run: Get-ChildItem -Path C:\\Users\\Public,C:\\Windows\\Temp,C:\\ProgramData -Recurse -ErrorAction SilentlyContinue | Where LastWriteTime -gt (Get-Date).AddHours(-1)', 'Terminate: Get-Process | Where {$_.Path -like "*Temp*" -or $_.Path -like "*Public*"} | Stop-Process -Force', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4688} -ComputerName {host} | Where {$_.Message -like "*certutil*"} | Select -First 20', 'Collect: Memory image from {host} before any remediation steps' ],
-  LOLBIN_MSHTA_REMOTE:             [ 'Terminate: Kill mshta.exe on {host} — executing remote content', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4688} -ComputerName {host} | Where {$_.Message -like "*mshta*"} | Select -First 20', 'Isolate: {host} from network to prevent C2 beacon or further payload delivery', 'Block: URL pattern from mshta command line at web proxy layer', 'Collect: Memory image from {host} and preserve running process list' ],
-  OFFICE_MACRO_DROPPER:            [ 'Isolate: {host} immediately — Office application spawned LOLBin indicating macro execution', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4688} -ComputerName {host} | Where {$_.Message -like "*winword*" -or $_.Message -like "*excel*"} | Select -First 20', 'Run: Get-Process -ComputerName {host} | Where {$_.Parent.Name -in "WINWORD","EXCEL","POWERPNT"} | Stop-Process -Force', 'Remove: Quarantine the Office document that triggered execution — check Recent Files', 'Collect: Memory image from {host} before any remediation — dropper may have injected' ],
-  POWERSHELL_ENCODED:              [ 'Terminate: Stop the encoded PowerShell process on {host}', 'Run: Get-WinEvent -FilterHashtable @{LogName="Microsoft-Windows-PowerShell/Operational";Id=4104} -ComputerName {host} | Select -First 20 — review script block logs', 'Decode: Extract and decode the -EncodedCommand payload — check for staged download or persistence', 'Run: Get-ScheduledTask -ComputerName {host} | Where TaskPath -ne "\\Microsoft\\" | Select TaskName,TaskPath', 'Collect: Export PowerShell event log and memory image from {host}' ],
-  SCHEDULED_TASK_CRADLE:           [ 'Disable: schtasks /change /tn "{resource}" /disable on {host} — malicious task contains download cradle', 'Run: schtasks /query /fo LIST /v /tn "{resource}" on {host} — inspect task XML and actions', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4698,4702} -ComputerName {host} | Select -First 20', 'Remove: schtasks /delete /f /tn "{resource}" on {host} after evidence collection', 'Collect: Export C:\\Windows\\System32\\Tasks\\ directory from {host} before deletion' ],
-  SCHEDULED_TASK_CREATED:          [ 'Review: schtasks /query /fo LIST /v on {host} — verify the new task is authorized', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4698} -ComputerName {host} | Select -First 5', 'Validate: Confirm {user} had authorization to create scheduled tasks', 'Run: Get-ScheduledTask -ComputerName {host} | Where TaskPath -ne "\\Microsoft\\" | Select TaskName,Principal', 'Document: Log the task creation for the change management record' ],
-  SERVICE_SUSPICIOUS_PATH:         [ 'Stop: sc stop "{resource}" on {host} — service binary in suspicious location', 'Run: sc qc "{resource}" on {host} — inspect service binary path and launch type', 'Run: Get-WinEvent -FilterHashtable @{LogName="System";Id=7045} -ComputerName {host} | Select -First 10', 'Remove: sc delete "{resource}" on {host} after evidence collection', 'Collect: Copy the suspicious service binary to forensics share before removal' ],
-  AUDIT_LOG_CLEARED:               [ 'Escalate: Immediate escalation to SOC Tier 2 — security log cleared on {host}', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=1102,4719} -ComputerName {host} | Select -First 10', 'Isolate: {host} from network — log clearing indicates active attacker attempting anti-forensics', 'Restore: Retrieve log backup from SIEM or centralized log server before further action', 'Collect: Full memory image from {host} — attacker may still be active' ],
-  ACCOUNT_CREATED_SUSPICIOUS:      [ 'Disable: net user {user} /active:no — suspicious account name pattern', 'Run: net user {user} /domain — review group membership and last logon', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4720,4732} -ComputerName {host} | Select -First 10', 'Remove: net user {user} /delete after confirming no legitimate purpose', 'Collect: Export Security event log from {host} before account deletion' ],
-  ACCOUNT_CREATED:                 [ 'Validate: Confirm {user} account creation was authorized by change management', 'Run: net user {user} /domain — review properties, group memberships, and expiry', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4720} -ComputerName {host} | Select -First 5', 'Review: Group memberships assigned to {user} — ensure principle of least privilege', 'Document: Log account creation in change management system' ],
-  NTDS_ACCESS:                     [ 'Isolate: {host} immediately — ntds.dit access detected, AD credential dump likely', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4663,4656} -ComputerName {host} | Where {$_.Message -like "*ntds.dit*"} | Select -First 20', 'Rotate: Force password reset for ALL domain accounts — assume full credential compromise', 'Run: net user /domain — identify all accounts that may have been compromised', 'Collect: Memory image and VSS snapshot from {host} before any changes' ],
-  SAM_ACCESS:                      [ 'Isolate: {host} immediately — SAM database accessed, local credential dump likely', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4663} -ComputerName {host} | Where {$_.Message -like "*SAM*"} | Select -First 20', 'Rotate: Reset all local administrator passwords on {host} via LAPS', 'Run: net localgroup administrators {host} — audit local admin group membership', 'Collect: Memory image from {host} before any remediation' ],
-  LSASS_DUMP_RUNDLL32:             [ 'Isolate: {host} — rundll32/comsvcs LSASS dump detected, credentials likely exfiltrated', 'Terminate: Get-Process rundll32 -ComputerName {host} | Stop-Process -Force', 'Rotate: Force password reset for all accounts logged on to {host} in the last 24h', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4688} -ComputerName {host} | Where {$_.Message -like "*rundll32*"} | Select -First 10', 'Collect: Memory image from {host} immediately — credential material may still be in memory' ],
-  MIMIKATZ_DETECTED:               [ 'Isolate: {host} immediately — Mimikatz detected, full credential compromise assumed', 'Rotate: Force Kerberos ticket invalidation: klist purge on all affected hosts', 'Rotate: Reset KRBTGT password twice to invalidate all existing Kerberos tickets', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4688} -ComputerName {host} | Where {$_.Message -like "*sekurlsa*" -or $_.Message -like "*mimikatz*"} | Select -First 10', 'Collect: Full memory image from {host} before isolating' ],
-
-  // ── Redis / Frequency ───────────────────────────────────────────────────────
-  CORRELATED_INDICATOR_ACTIVITY:   [ 'Escalate: Active multi-asset campaign confirmed — escalate to Tier 2 immediately', 'Block: {src_ip} at all perimeter firewalls — indicator seen across multiple assets', 'Run: Threat hunt for {src_ip} and {user} across all SIEM data sources', 'Contain: Isolate all assets involved in the campaign — check correlation panel for full scope', 'Collect: Pull logs from all affected assets for timeline reconstruction' ],
-  REPEATED_INDICATOR:              [ 'Investigate: {src_ip} or {user} seen multiple times in 24h — determine if pattern is benign or malicious', 'Block: {src_ip} at perimeter pending investigation result', 'Run: Query SIEM for all events involving {src_ip} and {user} in the last 72h', 'Review: Threat intelligence platforms for {src_ip} — check AbuseIPDB and VirusTotal', 'Collect: Preserve all log evidence related to {src_ip} before IP block' ],
-
-  // ── ACS Behavioral ──────────────────────────────────────────────────────────
-  ACS_AUTH_FAILURE_MASS:           [ 'Block: {src_ip} at perimeter — mass authentication failures exceeding threshold', 'Run: Get authentication logs for {host} covering all {user} login attempts in the last hour', 'Run: net user {user} — check lockout status and reset if compromised', 'Enforce: Account lockout threshold of 5 failed attempts across all systems', 'Collect: Export authentication logs from {host} for forensic analysis' ],
-  ACS_AUTH_FAILURE_HIGH:           [ 'Monitor: {src_ip} closely — repeated auth failures above threshold', 'Investigate: Retrieve authentication logs for {host} and validate if {user} account is compromised', 'Run: net user {user} — review last logon time and account status', 'Review: MFA enforcement status for {user}', 'Preserve: Export auth logs from {host}' ],
-  ACS_AUTH_FAILURE_LOW:            [ 'Review: Confirm {user} logon failure is expected — password change or MFA prompt', 'Run: Retrieve the last 10 authentication events for {user} on {host}', 'Validate: Check if {src_ip} is a known legitimate source for {user}', 'Document: Log for baseline — single failure may indicate mistyped password', 'Monitor: Flag for recurrence — escalate if same pattern repeats' ],
-  ACS_PRIVILEGE_ACTION:            [ 'Validate: Confirm {user} was authorized to perform privilege action on {host}', 'Investigate: Review privilege escalation logs for {host} in the last 30 minutes', 'Run: Retrieve audit trail for {user} privilege actions today', 'Review: Principle of least privilege — verify {user} role assignment is correct', 'Document: Log privilege action in change management system' ],
-  ACS_REMOTE_DOWNLOAD:             [ 'Terminate: Kill the process performing the download on {host}', 'Isolate: {host} from network — remote download via command line indicates payload staging', 'Run: Inspect command line arguments for the download URL and block at web proxy', 'Run: Search endpoint for newly created files in temp/staging directories on {host}', 'Collect: Memory image from {host} before remediation' ],
-  ACS_BASE64_EXECUTION:            [ 'Terminate: Kill the obfuscated command process on {host}', 'Decode: Extract base64 payload from command line for static analysis', 'Isolate: {host} from network pending payload analysis', 'Run: Search for similar encoded commands in SIEM across all endpoints', 'Collect: Preserve process memory and command line artifacts from {host}' ],
-  ACS_SUDO_SHELL:                  [ 'Terminate: Kill the elevated shell process on {host}', 'Run: who; w; last on {host} — identify all active sessions', 'Revoke: Remove {user} sudo privileges pending investigation: visudo on {host}', 'Run: ausearch -m USER_CMD -ua {user} on {host} — review sudo command history', 'Collect: Copy /var/log/auth.log and /var/log/syslog from {host} before changes' ],
-  ACS_CLOUD_PRIVILEGE_ESCALATION:  [ 'Revoke: aws iam detach-user-policy / detach-role-policy — remove escalated IAM permissions', 'Run: aws iam get-user --user-name {user} && aws iam list-attached-user-policies --user-name {user}', 'Run: aws cloudtrail lookup-events --lookup-attributes AttributeKey=Username,AttributeValue={user}', 'Rotate: aws iam create-access-key / delete-access-key for {user} — rotate compromised credentials', 'Collect: aws cloudtrail lookup-events --start-time $(date -d "24 hours ago" --iso-8601) | tee cloudtrail_audit.json' ],
-  ACS_CLOUD_ROLE_ASSUMPTION_FAIL:  [ 'Investigate: aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=AssumeRole | grep {user}', 'Review: aws iam get-role / list-attached-role-policies for the target role', 'Block: Update the role trust policy to restrict AssumeRole to known accounts only', 'Monitor: Set CloudWatch alarm on AssumeRole failures for this role', 'Collect: aws cloudtrail lookup-events for the last 24h related to {user}' ],
-  ACS_SUSPICIOUS_DATA_ACCESS:      [ 'Investigate: Validate that {user} has business need for the accessed resource', 'Run: aws s3api get-bucket-acl / get-bucket-policy to confirm data classification', 'Block: Temporarily revoke {user} access to the sensitive resource pending review', 'Run: aws cloudtrail lookup-events --lookup-attributes AttributeKey=Username,AttributeValue={user}', 'Collect: Export data access logs for {user} for the last 7 days' ],
-  ACS_OBJECT_ACCESS_SENSITIVE:     [ 'Isolate: {host} — credential-sensitive resource accessed on this host', 'Run: Identify the process that opened the sensitive resource using EDR/process telemetry', 'Rotate: Change passwords for accounts stored in the accessed credential store', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4663} -ComputerName {host} | Select -First 20', 'Collect: Memory image from {host} before any remediation' ],
-  ACS_LATERAL_MOVEMENT_CANDIDATE:  [ 'Investigate: Confirm {src_ip} → {host} logon is authorized — check if it matches expected access patterns', 'Run: Get-WinEvent -FilterHashtable @{LogName="Security";Id=4624} -ComputerName {host} | Where {$_.Message -like "*{src_ip}*"} | Select -First 10', 'Validate: net user {user} /domain — verify {user} has legitimate reason to logon from {src_ip}', 'Review: List all hosts {user} has authenticated to in the last 24h via SIEM', 'Monitor: Alert on subsequent logon attempts from {src_ip} to other internal hosts' ],
-  ACS_HIGH_VOLUME_DATA_ACCESS:     [ 'Investigate: {user} accessing {resource} at high frequency — confirm business justification', 'Run: aws cloudtrail lookup-events to retrieve all access events for {user} in the last hour', 'Block: Temporarily suspend {user} S3 access pending review if no business case found', 'Run: aws s3api get-bucket-logging to confirm access logging is enabled', 'Collect: Export all CloudTrail events for {user} for the last 24h' ],
-  ACS_ACCOUNT_DELETION:            [ 'Escalate: Account deletion event detected — potential evidence destruction or insider threat', 'Run: aws iam get-user / Get-WinEvent for account deletion events related to {user}', 'Restore: Recover the deleted account if unauthorized: aws iam create-user', 'Run: Retrieve full activity log for {user} who performed the deletion', 'Collect: Export IAM activity logs before any further changes' ],
-  ACS_PARTIAL_DETECTION:           [ 'Investigate: Log format could not be fully normalized — manually review the raw alert', 'Escalate: Forward raw log to Tier 2 analyst for manual parsing and classification', 'Validate: Confirm the log source is sending complete structured events to the SIEM', 'Review: Check for log format changes in the sending system configuration', 'Document: Log this parsing failure — use to improve normalization rules' ],
-
-  // ── Enrichment ──────────────────────────────────────────────────────────────
-  ENRICHMENT_CONFIRMED_MALICIOUS:  [ 'Block: {src_ip} at perimeter firewall — confirmed malicious IP in threat intelligence', 'Run: Get-WinEvent or SIEM query for all connections from {src_ip} in the last 7 days', 'Isolate: {host} if an active connection to {src_ip} is open', 'Run: netstat -ano | findstr {src_ip} on {host} — check for active connections', 'Collect: Preserve all logs referencing {src_ip} before IP block' ],
-  ENRICHMENT_SUSPICIOUS:           [ 'Monitor: {src_ip} closely — flagged suspicious in threat intelligence', 'Investigate: Review all events from {src_ip} in the SIEM for the last 24h', 'Validate: Confirm {src_ip} is not a legitimate business partner or VPN exit node', 'Block: Add {src_ip} to watchlist — escalate to block if additional IOCs appear', 'Collect: Export all logs related to {src_ip} for correlation analysis' ],
-  ENRICHMENT_CLEAN:                [ 'Document: {src_ip} is clean across all threat intelligence sources — likely false positive', 'Investigate: Review the alert rule that triggered on a clean IP', 'Validate: Confirm the alert is expected behavior for {host} and {user}', 'Tune: Consider adjusting the detection threshold to reduce clean-IP noise', 'Close: Mark as false positive if no other suspicious indicators present' ],
+  ACS_AUTH_FAILURE_LOW: [
+    "Verify whether the authentication failure was isolated or part of a broader pattern",
+    "Check if the account targeted has been accessed successfully from the same source recently",
+  ],
+  ACS_AUTH_FAILURE_HIGH: [
+    "Verify whether any successful authentication followed the failure sequence",
+    "Check if the targeted account shows signs of lockout or policy modification",
+    "Correlate the failure source with known infrastructure or previous session activity",
+  ],
+  ACS_AUTH_FAILURE_MASS: [
+    "Verify whether any authentication succeeded during or after the failure window",
+    "Correlate the source IP with other activity in the session",
+    "Check whether the volume pattern suggests automated tooling or manual activity",
+  ],
+  ACS_PRIVILEGE_ACTION: [
+    "Verify whether the privilege action was authorized and expected for this account",
+    "Check whether the action was preceded by unusual authentication or access patterns",
+    "Correlate with other privilege-related events on the same asset",
+  ],
+  ACS_CLOUD_PRIVILEGE_ESCALATION: [
+    "Verify whether the policy attachment was authorized and matches expected IAM activity",
+    "Check the current effective permissions of the target account after the action",
+    "Correlate with other IAM changes in the same time window",
+  ],
+  ACS_CLOUD_ROLE_ASSUMPTION_FAIL: [
+    "Verify whether the role assumption attempt was expected for this identity",
+    "Check whether the failure was followed by a successful assumption from another path",
+    "Correlate the source with other AWS API activity in the session",
+  ],
+  ACS_REMOTE_DOWNLOAD: [
+    "Verify whether the remote resource accessed is known infrastructure or unexpected",
+    "Check whether any files were written to disk following the download attempt",
+    "Correlate the destination with other network connections from the affected host",
+  ],
+  ACS_BASE64_EXECUTION: [
+    "Verify whether the encoding pattern matches known legitimate automation on this host",
+    "Check for any child processes or file writes following the encoded execution",
+    "Correlate with other command execution events on the same asset",
+  ],
+  ACS_SUDO_SHELL: [
+    "Verify whether the interactive shell escalation was authorized for this account",
+    "Check for commands executed within the escalated shell session",
+    "Correlate with other privilege events on the same host",
+  ],
+  ACS_SUSPICIOUS_DATA_ACCESS: [
+    "Verify whether the resource accessed is within the expected scope for this account",
+    "Check whether the access volume or pattern differs from baseline behavior",
+    "Correlate with other access events on the same resource in the session",
+  ],
+  ACS_OBJECT_ACCESS_SENSITIVE: [
+    "Verify whether access to this resource was expected for the acting identity",
+    "Check whether the access was read-only or included write or delete operations",
+  ],
+  ACS_LATERAL_MOVEMENT_CANDIDATE: [
+    "Verify whether the source and destination hosts share an expected trust relationship",
+    "Check whether the credential used is consistent with normal access patterns",
+    "Correlate with authentication events on the destination host",
+  ],
+  ACS_HIGH_VOLUME_DATA_ACCESS: [
+    "Verify whether the access volume is consistent with legitimate activity for this account",
+    "Check whether the data accessed was exfiltrated or remained within the environment",
+  ],
+  ACS_ACCOUNT_DELETION: [
+    "Verify whether the account deletion was authorized and matches expected lifecycle activity",
+    "Check whether the deleted account had active sessions or elevated permissions",
+  ],
+  ACS_PARTIAL_DETECTION: [
+    "Verify whether a more specific parser applies to this log format",
+    "Correlate any extracted indicators with other session activity before drawing conclusions",
+  ],
+  BRUTE_FORCE_EXTREME: [
+    "Verify whether any authentication succeeded following the brute force sequence",
+    "Check whether account lockout policies functioned as expected during the attack",
+    "Correlate the source with known threat infrastructure or previous session activity",
+  ],
+  BRUTE_FORCE_HIGH: [
+    "Verify whether the failure pattern is consistent with credential stuffing or targeted guessing",
+    "Check whether the targeted account shows signs of compromise following the failures",
+  ],
+  BRUTE_FORCE_MEDIUM: [
+    "Verify whether the failure count represents automated tooling or manual attempts",
+    "Check whether the source IP has appeared in other authentication events",
+  ],
+  LOGON_FAILURE_LOW: [
+    "Verify whether the failure was isolated or the beginning of a broader pattern",
+    "Check whether the account targeted is active and the credential configuration is valid",
+  ],
+  LOLBIN_CERTUTIL_DOWNLOAD: [
+    "Verify whether certutil was invoked for a legitimate certificate operation or as a download proxy",
+    "Check whether any files were written to disk as a result of the certutil execution",
+    "Correlate with other process execution events on the affected host",
+  ],
+  LOLBIN_CERTUTIL_SUSPICIOUS_PATH: [
+    "Verify whether the file written to the suspicious path was subsequently executed",
+    "Check the file written for indicators of staged payloads or known malicious content",
+  ],
+  LOLBIN_MSHTA_REMOTE: [
+    "Verify whether the remote resource contacted by mshta is known or expected infrastructure",
+    "Check whether mshta spawned any child processes following the remote connection",
+  ],
+  OFFICE_MACRO_DROPPER: [
+    "Verify whether the Office document that triggered the child process was expected or externally received",
+    "Check whether the spawned process made any network connections or file writes",
+    "Correlate with document delivery or sharing events preceding the execution",
+  ],
+  POWERSHELL_ENCODED: [
+    "Verify whether encoded PowerShell execution is expected or authorized in this environment",
+    "Check for any network connections or file operations following the execution",
+    "Correlate with other command execution events on the affected host",
+  ],
+  SCHEDULED_TASK_CRADLE: [
+    "Verify whether the scheduled task was created by an authorized process or account",
+    "Check the task action content for indicators of download cradle or execution chain",
+    "Correlate with other persistence or execution events on the same asset",
+  ],
+  SCHEDULED_TASK_CREATED: [
+    "Verify whether the scheduled task creation was authorized and expected",
+    "Check the task trigger, action, and author against known legitimate configurations",
+  ],
+  SERVICE_SUSPICIOUS_PATH: [
+    "Verify whether the service binary path resolves to a legitimate executable",
+    "Check the service creation context — which account created it and when",
+  ],
+  AUDIT_LOG_CLEARED: [
+    "Verify whether the log clearing was authorized and part of a known maintenance procedure",
+    "Check for activity immediately preceding the clearing that may have been intentionally removed",
+    "Correlate with other defense evasion indicators on the same host",
+  ],
+  ACCOUNT_CREATED_SUSPICIOUS: [
+    "Verify whether the new account name matches any legitimate provisioning patterns",
+    "Check whether the account was added to any groups or granted permissions after creation",
+    "Correlate account creation with other activity from the creating principal",
+  ],
+  ACCOUNT_CREATED: [
+    "Verify whether the account creation was expected and follows normal provisioning procedure",
+    "Check whether the creating account had authorization for user management",
+  ],
+  NTDS_ACCESS: [
+    "Verify whether access to the NTDS database was expected for this account and process",
+    "Check whether any credential extraction indicators are present on the host",
+    "Correlate with other credential access events in the session",
+  ],
+  SAM_ACCESS: [
+    "Verify whether access to the SAM database was expected for this account and process",
+    "Check whether the access pattern is consistent with known credential extraction techniques",
+  ],
+  LSASS_DUMP_RUNDLL32: [
+    "Verify whether the comsvcs MiniDump invocation was expected or authorized on this host",
+    "Check whether any dump files were written to disk and whether they persist",
+    "Correlate with other credential access or lateral movement indicators",
+  ],
+  MIMIKATZ_DETECTED: [
+    "Verify whether the process invoking credential access patterns was expected on this host",
+    "Check for any subsequent lateral movement or new authentication events",
+    "Correlate with other persistence or execution indicators in the session",
+  ],
+  ASSET_CRITICAL: [
+    "Verify whether access to this critical asset was expected from the observed source",
+    "Check all other indicators with elevated scrutiny given the asset criticality",
+  ],
 }
 
 function buildDeterministicRecommendations(signals, affectedAsset, acsObject) {
-  const host    = affectedAsset ?? 'AFFECTED_HOST'
-  const user    = acsObject?.acs_data?.user?.value ?? 'AFFECTED_USER'
-  const srcIp   = acsObject?.acs_data?.src_ip?.value ?? 'UNKNOWN_IP'
+  const host     = affectedAsset ?? 'AFFECTED_HOST'
+  const user     = acsObject?.acs_data?.user?.value ?? 'AFFECTED_USER'
+  const srcIp    = acsObject?.acs_data?.src_ip?.value ?? 'UNKNOWN_IP'
   const resource = (acsObject?.acs_data?.object_name?.value ?? acsObject?.acs_data?.task_name?.value ?? acsObject?.acs_data?.service_name?.value ?? acsObject?.acs_data?.resource_name?.value ?? 'UNKNOWN_RESOURCE')
 
   const fill = (s) => s
@@ -1096,46 +1180,39 @@ function buildDeterministicRecommendations(signals, affectedAsset, acsObject) {
     .replace(/{src_ip}/g, srcIp)
     .replace(/{resource}/g, resource)
 
-  // Sort behavioral signals by weight desc, exclude frequency signals
-  const sorted = [...(signals ?? [])]
-    .filter(s => s.signal_layer === 'behavioral' && !s.frequency)
+  const contributing = [...(signals ?? [])]
+    .filter(s => {
+      if (s.frequency === true) return false
+      if (s.category === 'asset') return false
+      if (s.category === 'enrichment') return false
+      if (s.signal_layer === 'behavioral') return true
+      // EventID-based detection signals (signal_layer=enrichment, category=behavioral)
+      // are included so they can generate recommendations in ENRICHMENT_ONLY_VERDICT
+      if (s.signal_layer === 'enrichment' && s.category === 'behavioral') return true
+      return false
+    })
     .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
 
-  const collected = []
+  if (contributing.length === 0) return { recommendations: [], provenance: [] }
+
+  const recommendations = []
+  const provenance = []
   const seen = new Set()
 
-  for (const sig of sorted) {
-    const recs = RECOMMENDATION_LOOKUP[sig.rule] ?? []
-    for (const rec of recs) {
-      const filled = fill(rec)
-      if (!seen.has(filled)) {
+  for (const signal of contributing) {
+    const entries = RECOMMENDATION_LOOKUP[signal.rule] ?? []
+    for (const entry of entries) {
+      const filled = fill(entry)
+      if (!seen.has(filled) && recommendations.length < 5) {
         seen.add(filled)
-        collected.push(filled)
+        recommendations.push(filled)
+        provenance.push(signal.rule)
       }
-      if (collected.length >= 5) break
     }
-    if (collected.length >= 5) break
+    if (recommendations.length >= 5) break
   }
 
-  // Fill remaining slots with generic fallbacks using the highest-weight signal's context
-  const topSignal = sorted[0]
-  const fallbacks = [
-    `Isolate: ${host} from network pending full investigation`,
-    `Run: Collect all relevant event logs from ${host} covering the last 24 hours`,
-    `Validate: Confirm account ${user} has not been compromised — check last logon and group membership`,
-    `Block: ${srcIp} at perimeter firewall pending threat intelligence verification`,
-    `Preserve: Export ${host} memory image and event logs before any remediation`,
-  ]
-
-  for (const fb of fallbacks) {
-    if (collected.length >= 5) break
-    if (!seen.has(fb)) {
-      seen.add(fb)
-      collected.push(fb)
-    }
-  }
-
-  return collected.slice(0, 5)
+  return { recommendations: recommendations.slice(0, 5), provenance: provenance.slice(0, 5) }
 }
 
 function buildNarratorPrompt(sanitizedAlert, parsedContext, enrichmentJudgment, redisContext, isActiveCampaign, uniqueAssetCount, frequencyMultiplier, finalVerdict, acsObject = null) {
@@ -1836,13 +1913,12 @@ export async function POST(request) {
           return set.size
         })()
         const maxRedisCount       = redisHits?.reduce((max, h) => Math.max(max, h.count ?? 0), 0) ?? 0
-        const isActiveCampaign    = (frequencyMultiplier >= 2 && uniqueAssetCount >= 2) || maxRedisCount >= 3
         const enrichmentJudgment  = buildEnrichmentJudgment(enrichment, ips, frequencyMultiplier)
 
         const signals      = getSignals(parsedAlert, enrichmentJudgment, redisHits, acsObject)
         let finalVerdict
         try {
-          finalVerdict = aggregateSignals(signals, parsedAlert.parseQuality)
+          finalVerdict = aggregateSignals(signals, parsedAlert.parseQuality, acsObject?.meta?.normalization_score ?? 0)
         } catch (engineErr) {
           console.error('[ARBITER] Decision engine error:', engineErr)
           finalVerdict = {
@@ -1855,8 +1931,14 @@ export async function POST(request) {
             decision_trace: [{ type: 'error', label: 'Decision engine failed — manual review required' }],
             signals: [],
             deterministicMitre: null,
+            verdictClass: 'NO_DETECTION',
+            verdictReliabilityClass: 'TRACE_REQUIRED',
           }
         }
+        const isActiveCampaign = (finalVerdict?.signals ?? signals).some(
+          s => s.rule === 'CORRELATED_INDICATOR_ACTIVITY'
+        )
+
         if (parsedAlert.parseQuality === 'partial') {
           finalVerdict.confidence = Math.max(0, finalVerdict.confidence - 25)
           finalVerdict.decision_trace.push({ type: 'penalty', label: 'Parse quality PARTIAL — confidence reduced by 25', value: -25 })
@@ -2059,6 +2141,9 @@ export async function POST(request) {
 
         const narrator = narratorOutput ?? narratorFallback
 
+        const { recommendations: deterministicRecommendations, provenance: deterministicProvenance }
+          = buildDeterministicRecommendations(finalVerdict.signals ?? signals, null, acsObject)
+
         const triage = {
           severity:          finalVerdict.severity,
           classification:    finalVerdict.classification,
@@ -2134,10 +2219,10 @@ export async function POST(request) {
             if (finalVerdict.classification !== 'UNKNOWN' && narrator?.mitre_tactic && narrator.mitre_tactic !== 'Unknown') return narrator.mitre_tactic
             return 'Unknown'
           })(),
-          recommendations:           buildDeterministicRecommendations(finalVerdict.signals, null, acsObject),
-          recommendation_provenance: ['behavioral_heuristic','forensic','account_action','forensic','forensic'],
-          verdictClass:              finalVerdict.verdictClass ?? 'INSUFFICIENT_BEHAVIORAL_EVIDENCE',
-          verdictReliabilityClass:   finalVerdict.verdictReliabilityClass ?? 'TRACE_REQUIRED',
+          recommendations:           deterministicRecommendations,
+          recommendation_provenance: deterministicProvenance,
+          verdict_class:             finalVerdict.verdictClass ?? 'NO_DETECTION',
+          verdict_reliability_class: finalVerdict.verdictReliabilityClass ?? 'TRACE_REQUIRED',
           reasoning: (() => {
             const r = narrator?.reasoning
             if (!r) return narratorFallback.reasoning
@@ -2148,7 +2233,10 @@ export async function POST(request) {
         }
 
         // Update affected_asset in recommendations now that triage.affected_asset is resolved
-        triage.recommendations = buildDeterministicRecommendations(finalVerdict.signals, triage.affected_asset, acsObject)
+        const { recommendations: finalRecommendations, provenance: finalProvenance }
+          = buildDeterministicRecommendations(finalVerdict.signals, triage.affected_asset, acsObject)
+        triage.recommendations = finalRecommendations
+        triage.recommendation_provenance = finalProvenance
 
         if (triage.tactic !== triage.mitre_tactic) triage.mitre_tactic = triage.tactic
 
@@ -2157,7 +2245,12 @@ export async function POST(request) {
         if (missingFields.length > 0) {
           console.error('[ARBITER] Output contract violation — missing fields:', missingFields)
           missingFields.forEach(f => {
-            if (f === 'recommendations') triage[f] = buildDeterministicRecommendations(finalVerdict.signals, triage.affected_asset, acsObject)
+            if (f === 'recommendations') {
+              const { recommendations: fallbackRecs, provenance: fallbackProv }
+                = buildDeterministicRecommendations(finalVerdict.signals, triage.affected_asset, acsObject)
+              triage.recommendations = fallbackRecs
+              triage.recommendation_provenance = fallbackProv
+            }
             else if (f === 'reasoning') triage[f] = narratorFallback.reasoning
             else if (f === 'indicators') triage[f] = narratorFallback.indicators
             else if (typeof triage[f] === 'undefined') triage[f] = narratorFallback[f] ?? null
@@ -2229,7 +2322,7 @@ export async function POST(request) {
             vendorOrigin:             acsObject?.meta?.vendor_origin ?? 'unknown',
             behavioralSignalCount:    (finalVerdict.signals ?? []).filter(s => s.signal_layer === 'behavioral').length,
             enrichmentSignalCount:    (finalVerdict.signals ?? []).filter(s => s.signal_layer === 'enrichment').length,
-            verdictClass:             finalVerdict.verdictClass ?? 'INSUFFICIENT_BEHAVIORAL_EVIDENCE',
+            verdictClass:             finalVerdict.verdictClass ?? 'NO_DETECTION',
             verdictReliabilityClass:  finalVerdict.verdictReliabilityClass ?? 'TRACE_REQUIRED',
           }
         })

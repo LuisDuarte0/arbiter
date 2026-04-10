@@ -12,7 +12,7 @@ function DecisionSignals({ triage, result }) {
 
   if (result?.meta?.correlated)
     signals.push({ label: 'REDIS: REPEAT', color: '#E57373', bg: 'rgba(229,115,115,0.12)', icon: '↺' })
-  if (result?.meta?.activeCampaign)
+  if (result?.meta?.activeCampaign || result?.meta?.correlatedIndicatorActivity)
     signals.push({ label: 'CAMPAIGN ACTIVE', color: '#E57373', bg: 'rgba(229,115,115,0.18)', icon: '🔥' })
   if ((result?.meta?.correlationPatterns ?? []).some(p => p.type === 'user_multihost'))
     signals.push({ label: 'USER: MULTI-HOST', color: '#CE93D8', bg: 'rgba(206,147,216,0.12)', icon: '⬡' })
@@ -84,7 +84,7 @@ const S = {
   confBarWrap: { width: '64px', height: '2px', background: 'var(--border-bright)', borderRadius: '1px', overflow: 'hidden', marginTop: '4px', marginLeft: 'auto' },
   twoCol: { display: 'grid', gridTemplateColumns: '1fr 1fr', borderBottom: '0.5px solid var(--border)' },
   leftCol: { padding: '12px 16px', borderRight: '0.5px solid var(--border)', display: 'flex', flexDirection: 'column', gap: '12px' },
-  rightCol: { padding: '12px 16px', display: 'flex', flexDirection: 'column', justifyContent: 'center' },
+  rightCol: { padding: '12px 16px', display: 'flex', flexDirection: 'column', justifyContent: 'flex-start', alignItems: 'flex-start' },
   metaBlock: { display: 'flex', flexDirection: 'column', gap: '2px' },
   sectionLabel: { fontFamily: 'var(--font-mono), monospace', fontSize: '8px', letterSpacing: '0.18em', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: '5px' },
   metaId: { fontFamily: 'var(--font-mono), monospace', fontSize: '11px', color: 'var(--amber)', fontWeight: '500' },
@@ -118,16 +118,22 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
 
   const isUrgent = triage?.severity === 'CRITICAL' || triage?.severity === 'HIGH'
 
-  // Parse reasoning into sentences for structured display
-  function parseReasoning(text) {
-    if (!text) return []
-    if (typeof text === 'object' && text.text) return parseReasoning(text.text)
-    const str = Array.isArray(text) ? text.join(' ') : String(text)
-    return str.split(/(?<=[.!?])\s+/).filter(s => s.trim().length > 0)
-  }
+  const verdictClass = triage?.verdict_class
+    ?? result?.meta?.verdictClass
+    ?? 'DEFENSIBLE_VERDICT'
 
-  const reasoningSentences = parseReasoning(triage?.reasoning)
-  const reasoningLabels = ['TECHNIQUE', 'INTELLIGENCE', 'RULE TRIGGERED', 'ACTION REQUIRED']
+  const verdictReliabilityClass = triage?.verdict_reliability_class
+    ?? result?.meta?.verdictReliabilityClass
+    ?? 'TRACE_REQUIRED'
+
+  const isIBE = verdictClass === 'NO_DETECTION'
+             || verdictClass === 'INSUFFICIENT_DATA'
+
+  const isEnrichmentOnly = verdictClass === 'ENRICHMENT_ONLY_VERDICT'
+
+  const isLowConfidence = verdictClass === 'LOW_CONFIDENCE_VERDICT'
+
+  const isSurfaceSafe = verdictReliabilityClass === 'SURFACE_SAFE'
 
   return (
     <div className="arb-panel arb-analysis">
@@ -194,10 +200,310 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
         </div>
       )}
 
-      {triage && (
+      {/* IBE STATE — no behavioral indicators */}
+      {triage && isIBE && (
+        <div>
+          {/* VERDICT HERO — IBE STATE */}
+          <div style={{ ...S.verdictHero, borderLeft: '3px solid var(--red)' }}>
+            <div style={S.verdictLeft}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Badge severity={triage.severity} />
+                <span style={{
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: '8px',
+                  letterSpacing: '0.1em',
+                  color: 'var(--red)',
+                  background: 'var(--red-15)',
+                  border: '0.5px solid var(--red-40)',
+                  borderRadius: '3px',
+                  padding: '2px 8px',
+                }}>
+                  {verdictClass === 'INSUFFICIENT_DATA'
+                    ? 'INSUFFICIENT DATA'
+                    : 'NO DETECTION'}
+                </span>
+              </div>
+              <div style={{ ...S.verdictTitle, color: 'var(--text-secondary)', fontSize: '18px', marginTop: '6px' }}>
+                {verdictClass === 'INSUFFICIENT_DATA'
+                  ? 'Log format could not be normalized to behavioral primitives'
+                  : 'No signals of any kind could be derived from this log'}
+              </div>
+              <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '10px', color: 'var(--text-muted)', marginTop: '6px', lineHeight: '1.6' }}>
+                {verdictClass === 'INSUFFICIENT_DATA'
+                  ? 'The ACS normalization layer could not extract sufficient independent fields from this log. Review the raw input and verify the correct mapper applies.'
+                  : 'Neither behavioral primitives nor domain-specific detection signals could be derived from the normalized data. No defensible verdict can be issued. Review the raw log manually.'}
+              </div>
+            </div>
+            <div style={S.verdictRight}>
+              <div style={S.confBlock}>
+                <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '32px', fontWeight: '600', color: 'var(--text-muted)', lineHeight: '1' }}>—</div>
+                <div style={S.confLabel}>NO VERDICT</div>
+              </div>
+            </div>
+          </div>
+
+          {/* EXTRACTED FIELDS — show what was parsed */}
+          {triage.evidence?.length > 0 && (
+            <div style={{ padding: '12px 22px', borderBottom: '0.5px solid var(--border)' }}>
+              <div style={S.sectionLabel}>EXTRACTED FIELDS</div>
+              <div style={S.evidenceChips}>
+                {triage.evidence.map((item, i) => {
+                  const eqIdx = item.indexOf('=')
+                  const field = eqIdx > -1 ? item.slice(0, eqIdx) : item
+                  const val = eqIdx > -1 ? item.slice(eqIdx + 1) : ''
+                  return (
+                    <div key={i} style={{ ...S.chip, color: 'var(--text-muted)', background: 'transparent', border: '0.5px solid var(--border-bright)' }}>
+                      <span>{field}</span>
+                      {val && <><span style={{ color: 'var(--border-bright)' }}>=</span><span style={{ color: 'var(--text-secondary)', fontSize: '8px' }}>{val.length > 20 ? val.slice(0, 20) + '…' : val}</span></>}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* NO RECOMMENDATIONS — explain why */}
+          <div style={{ padding: '16px 22px', background: 'rgba(239,68,68,0.03)', borderBottom: '0.5px solid var(--border)' }}>
+            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--red)', letterSpacing: '0.15em', marginBottom: '6px' }}>NO INVESTIGATION PATH GENERATED</div>
+            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '10px', color: 'var(--text-muted)', lineHeight: '1.6' }}>
+              Investigation hypotheses require at least one defensible behavioral signal. No recommendations are generated when no behavioral evidence exists — generating them would be fabrication.
+            </div>
+          </div>
+        </div>
+      )}
+
+      {triage && isEnrichmentOnly && (
+        <div>
+          {/* VERDICT HERO — enrichment only state */}
+          <div style={{ ...S.verdictHero, borderLeft: '3px solid var(--amber)' }}>
+            <div style={S.verdictLeft}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <Badge severity={triage.severity} />
+                <span style={{
+                  fontFamily: 'var(--font-mono), monospace',
+                  fontSize: '8px',
+                  letterSpacing: '0.1em',
+                  color: 'var(--amber)',
+                  background: 'var(--amber-15)',
+                  border: '0.5px solid var(--amber-40)',
+                  borderRadius: '3px',
+                  padding: '2px 8px',
+                }}>ENRICHMENT-BASED VERDICT</span>
+              </div>
+              <div style={S.verdictTitle}>{triage.classification}</div>
+              <div style={S.verdictSub}>
+                <span>{triage.tactic}</span>
+                <span style={{ color: 'var(--border-bright)' }}>·</span>
+                <span style={{ color: 'var(--amber)' }}>{triage.mitre_id}</span>
+                <span style={{ color: 'var(--border-bright)' }}>·</span>
+                <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--amber)', letterSpacing: '0.06em' }}>TRACE_REQUIRED</span>
+              </div>
+              <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-muted)', marginTop: '6px', lineHeight: '1.6', maxWidth: '380px' }}>
+                Detected via domain-specific knowledge (EventID semantics, asset rules). No vendor-agnostic behavioral primitives were derived. Verdict is reliable within its vendor context but requires trace validation before acting.
+              </div>
+            </div>
+            <div style={S.verdictRight}>
+              <div style={S.confBlock}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+                  <span style={S.confBig}>{triage.confidence}</span>
+                  <span style={S.confUnit}>%</span>
+                </div>
+                <div style={S.confLabel}>CONFIDENCE</div>
+                <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--amber)', letterSpacing: '0.06em', marginTop: '3px', textAlign: 'right' }}>
+                  ENRICHMENT-BASED
+                </div>
+                <div style={S.confBarWrap}>
+                  <div style={{ height: '100%', background: 'var(--amber)', borderRadius: '1px', width: `${triage.confidence}%`, opacity: '0.6' }} />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* DECISION SIGNALS */}
+          <DecisionSignals triage={triage} result={result} />
+
+          {/* TWO COLUMN — MITRE + ASSET left, EVIDENCE right */}
+          <div style={S.twoCol}>
+            <div style={S.leftCol}>
+              <div style={S.metaBlock}>
+                <div style={S.sectionLabel}>MITRE ATT&CK</div>
+                <div style={S.metaId}>{triage.mitre_id}</div>
+                <div style={S.metaName}>{triage.mitre_name}</div>
+                <div style={S.metaDetail}>{triage.mitre_tactic} · {result?.meta?.vendor_origin ?? 'Unknown'} · Security Logs</div>
+              </div>
+              <div style={S.divider} />
+              <div style={S.metaBlock}>
+                <div style={S.sectionLabel}>AFFECTED ASSET</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ ...S.assetName, color: triage.asset_is_critical ? '#F59E0B' : 'var(--text-primary)' }}>
+                    {triage.affected_asset}
+                  </div>
+                </div>
+                <span style={{
+                  fontFamily: 'var(--font-mono), monospace', fontSize: '7px',
+                  color: triage.asset_is_critical ? '#E57373' : 'var(--text-muted)',
+                  background: triage.asset_is_critical ? 'rgba(229,115,115,0.12)' : 'rgba(255,255,255,0.04)',
+                  border: `0.5px solid ${triage.asset_is_critical ? 'rgba(229,115,115,0.4)' : 'rgba(255,255,255,0.08)'}`,
+                  borderRadius: '2px', padding: '2px 6px', marginTop: '5px', display: 'inline-block',
+                }}>
+                  {triage.asset_is_critical ? '⚠ CRITICAL ASSET' : 'STANDARD ASSET'}
+                </span>
+              </div>
+            </div>
+            <div style={{ ...S.rightCol, justifyContent: 'flex-start', alignItems: 'flex-start' }}>
+              <div style={S.sectionLabel}>EVIDENCE</div>
+              <div style={S.evidenceChips}>
+                {(triage.evidence ?? []).map((item, i) => {
+                  const eqIdx = item.indexOf('=')
+                  const field = eqIdx > -1 ? item.slice(0, eqIdx) : item
+                  const val = eqIdx > -1 ? item.slice(eqIdx + 1) : ''
+                  const isIP = /^\d{1,3}(\.\d{1,3}){3}$/.test(val) || field.toLowerCase().includes('ip')
+                  const isUser = field.toLowerCase().includes('user')
+                  const chipColor = isIP ? '#64B5F6' : isUser ? '#CE93D8' : 'var(--amber)'
+                  const chipBg = isIP ? 'rgba(100,181,246,0.1)' : isUser ? 'rgba(206,147,216,0.1)' : 'var(--amber-15)'
+                  const chipBorder = isIP ? 'rgba(100,181,246,0.3)' : isUser ? 'rgba(206,147,216,0.3)' : 'var(--amber-40)'
+                  return (
+                    <div key={i} style={{ ...S.chip, color: chipColor, background: chipBg, border: `0.5px solid ${chipBorder}` }}>
+                      <span>{field}</span>
+                      {val && <><span style={{ color: `${chipColor}50` }}>=</span><span style={{ color: 'var(--text-primary)', fontSize: '8px' }}>{val.length > 20 ? val.slice(0, 20) + '…' : val}</span></>}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* ENGINE DECISION TRACE */}
+          {decisionTrace.length > 0 && (
+            <div style={{ ...S.reasoningSection, marginBottom: 0, paddingBottom: '14px', borderBottom: '0.5px solid var(--border)', borderTop: '0.5px solid var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                <div style={S.sectionLabel}>ENGINE DECISION TRACE</div>
+                <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>
+                  {(result?.meta?.signals ?? []).length} SIGNAL{(result?.meta?.signals ?? []).length !== 1 ? 'S' : ''} · ENRICHMENT-BASED · {result?.meta?.parseQuality?.toUpperCase() ?? 'UNKNOWN'} PARSE
+                </span>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                {(decisionTrace ?? []).map((e, i) => {
+                  const typeColors = { dominant: 'var(--amber)', severity: 'var(--red)', classification: '#6B7FD4', asset: '#F59E0B', confidence: 'var(--text-muted)', supporting: 'var(--text-muted)', penalty: 'var(--red)' }
+                  if (typeof e === 'string') e = { type: 'supporting', label: e }
+                  if (!e.type) e = { ...e, type: 'supporting' }
+                  const color = typeColors[e.type] ?? 'var(--text-muted)'
+                  return (
+                    <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', padding: e.type === 'dominant' ? '6px 8px' : '2px 0', background: e.type === 'dominant' ? 'rgba(245,158,11,0.08)' : 'transparent', borderRadius: e.type === 'dominant' ? '3px' : '0', borderLeft: e.type === 'dominant' ? '2px solid var(--amber)' : 'none', paddingLeft: e.type === 'dominant' ? '10px' : '0' }}>
+                      <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color, letterSpacing: '0.1em', minWidth: '80px', paddingTop: '1px', textTransform: 'uppercase', opacity: 0.8 }}>{e.type}</span>
+                      <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: e.type === 'dominant' ? '10px' : '9px', color: e.type === 'dominant' ? 'var(--amber)' : 'var(--text-secondary)', lineHeight: '1.5', flex: 1 }}>
+                        {e.label}
+                        {e.rule && <span style={{ color: 'var(--text-muted)', fontSize: '8px' }}> [{e.rule}]</span>}
+                      </span>
+                      {e.severity && <span className={`arb-badge arb-${e.severity?.toLowerCase()}`} style={{ fontSize: '7px', flexShrink: 0 }}>{e.severity}</span>}
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* RECOMMENDED ACTIONS */}
+          {triage.recommendations?.length > 0 && (
+            <div style={{ padding: '14px 22px', borderBottom: '0.5px solid var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                <div style={S.actionsLabel}>RECOMMENDED ACTIONS</div>
+                <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--amber)', letterSpacing: '0.08em' }}>ENRICHMENT-DERIVED</span>
+              </div>
+              <div style={S.stepsList}>
+                {triage.recommendations.map((rec, i) => {
+                  const signalRule = triage.recommendation_provenance?.[i]
+                  return (
+                    <div key={i} style={{ ...S.step, position: 'relative' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                        <div style={S.stepNum}>{String(i + 1).padStart(2, '0')}</div>
+                        {i < triage.recommendations.length - 1 && <div style={{ width: '0.5px', flex: '1', minHeight: '6px', background: 'var(--border-bright)', margin: '2px 0' }} />}
+                      </div>
+                      <div style={{ flex: 1, paddingBottom: i === triage.recommendations.length - 1 ? 0 : '8px' }}>
+                        <div style={S.stepText}>{rec}</div>
+                        {signalRule && <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.1em', marginTop: '2px' }}>↳ {signalRule}</div>}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* BEHAVIORAL SYNTHESIS */}
+          {triage.reasoning && (
+            <div style={{ padding: '14px 22px', borderBottom: '0.5px solid var(--border)', background: 'rgba(100,181,246,0.02)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', letterSpacing: '0.18em', color: '#64B5F6', textTransform: 'uppercase' }}>BEHAVIORAL SYNTHESIS</div>
+                  <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'rgba(100,181,246,0.6)', background: 'rgba(100,181,246,0.08)', border: '0.5px solid rgba(100,181,246,0.2)', borderRadius: '2px', padding: '1px 6px', letterSpacing: '0.06em' }}>LLM-GENERATED</span>
+                </div>
+                <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.06em' }}>not in forensic export</span>
+              </div>
+              <div style={{ background: 'rgba(100,181,246,0.04)', borderLeft: '2px solid rgba(100,181,246,0.4)', borderRadius: '0 4px 4px 0', padding: '12px 16px' }}>
+                <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.8' }}>
+                  {typeof triage.reasoning === 'string' ? triage.reasoning : Array.isArray(triage.reasoning) ? triage.reasoning.join(' ') : triage.reasoning?.text ?? ''}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* CONTAINMENT CTA */}
+          <div style={S.containmentSection}>
+            <div style={S.containmentLeft}>
+              <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--amber)', letterSpacing: '0.08em' }}>
+                ⚠ TRACE_REQUIRED — validate reasoning before acting
+              </div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+              {result && (
+                <button onClick={() => {
+                  // reasoning excluded — LLM synthesis is not evidence
+                  const forensic = {
+                    case_id: result?.meta?.alertType ?? 'UNKNOWN',
+                    timestamp: new Date().toISOString(),
+                    severity: triage.severity,
+                    classification: triage.classification,
+                    confidence: triage.confidence,
+                    mitre_id: triage.mitre_id,
+                    mitre_name: triage.mitre_name,
+                    affected_asset: triage.affected_asset,
+                    asset_is_critical: triage.asset_is_critical,
+                    evidence: triage.evidence,
+                    signals: result?.meta?.signals ?? [],
+                    decision_trace: result?.meta?.deterministicOverrides ?? [],
+                    recommendations: triage.recommendations,
+                    enrichment_sources: result?.meta?.enrichmentSources ?? [],
+                    correlated: result?.meta?.correlated ?? false,
+                    parse_quality: result?.meta?.parseQuality ?? 'unknown',
+                    verdict_class: triage.verdict_class ?? 'ENRICHMENT_ONLY_VERDICT',
+                    verdict_reliability_class: 'TRACE_REQUIRED',
+                  }
+                  navigator.clipboard.writeText(JSON.stringify(forensic, null, 2))
+                }}
+                style={{ background: 'none', border: '0.5px solid var(--border-bright)', borderRadius: '3px', color: 'var(--text-muted)', fontFamily: 'var(--font-mono), monospace', fontSize: '8px', letterSpacing: '0.08em', cursor: 'pointer', padding: '6px 10px', whiteSpace: 'nowrap' }}
+                onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-secondary)' }}
+                onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)' }}>
+                  ⬡ FORENSIC
+                </button>
+              )}
+              <button style={{ display: 'flex', alignItems: 'center', gap: '10px', background: isUrgent ? 'var(--red)' : 'var(--amber)', border: 'none', borderRadius: '4px', padding: '9px 18px', cursor: 'pointer', flexShrink: 0 }}
+                onClick={() => setContainmentOpen(true)}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#080C14" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
+                </svg>
+                <span style={S.containmentBtnLabel}>GENERATE CONTAINMENT PLAYBOOK</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* NORMAL TRIAGE RENDER — only when behavioral evidence exists */}
+      {triage && !isIBE && !isEnrichmentOnly && (
         <div>
 
-          {/* VERDICT HERO */}
+          {/* 1. VERDICT HERO */}
           <div style={S.verdictHero}>
             <div style={S.verdictLeft}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -224,6 +530,20 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                   <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: result.meta.parseQuality === 'structured' ? '#4CAF50' : 'var(--red)', letterSpacing: '0.06em' }}>
                     {result.meta.parseQuality.toUpperCase()}
                   </span></>
+                )}
+                {verdictReliabilityClass && (
+                  <>
+                    <span style={{ color: 'var(--border-bright)' }}>·</span>
+                    <span style={{
+                      fontFamily: 'var(--font-mono), monospace',
+                      fontSize: '8px',
+                      color: isSurfaceSafe ? 'var(--green)' : 'var(--amber)',
+                      letterSpacing: '0.06em',
+                      fontWeight: isSurfaceSafe ? '600' : '400',
+                    }}>
+                      {isSurfaceSafe ? 'SURFACE_SAFE' : 'TRACE_REQUIRED'}
+                    </span>
+                  </>
                 )}
               </div>
             </div>
@@ -266,13 +586,13 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
             </div>
           </div>
 
-          {/* DECISION SIGNALS */}
+          {/* 2. DECISION SIGNALS */}
           <DecisionSignals triage={triage} result={result} />
 
-          {/* TWO COLUMN BODY */}
+          {/* 3. TWO-COLUMN BODY — LEFT: MITRE + ASSET | RIGHT: EVIDENCE */}
           <div style={S.twoCol}>
 
-            {/* LEFT — MITRE + ASSET + EVIDENCE */}
+            {/* LEFT — MITRE ATT&CK + AFFECTED ASSET */}
             <div style={S.leftCol}>
               <div style={S.metaBlock}>
                 <div style={S.sectionLabel}>MITRE ATT&CK</div>
@@ -310,66 +630,44 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                   {triage.asset_is_critical ? '⚠ CRITICAL ASSET' : 'STANDARD ASSET'}
                 </span>
               </div>
-              {triage.evidence?.length > 0 && (
-                <>
-                  <div style={S.divider} />
-                  <div>
-                    <div style={S.sectionLabel}>EVIDENCE</div>
-                    <div style={S.evidenceChips}>
-                      {(triage.evidence ?? []).map((item, i) => {
-                        const eqIdx = item.indexOf('=')
-                        const field = eqIdx > -1 ? item.slice(0, eqIdx) : item
-                        const val   = eqIdx > -1 ? item.slice(eqIdx + 1) : ''
-                        return (
-                          (() => {
-                            const isIP = /^\d{1,3}(\.\d{1,3}){3}$/.test(val) || field.toLowerCase().includes('ip') || field.toLowerCase().includes('address')
-                            const isUser = field.toLowerCase().includes('user') || field.toLowerCase().includes('subject') || field.toLowerCase().includes('target')
-                            const chipColor = isIP ? '#64B5F6' : isUser ? '#CE93D8' : 'var(--amber)'
-                            const chipBg = isIP ? 'rgba(100,181,246,0.1)' : isUser ? 'rgba(206,147,216,0.1)' : 'var(--amber-15)'
-                            const chipBorder = isIP ? 'rgba(100,181,246,0.3)' : isUser ? 'rgba(206,147,216,0.3)' : 'var(--amber-40)'
-                            return (
-                              <div key={i} style={{ ...S.chip, color: chipColor, background: chipBg, border: `0.5px solid ${chipBorder}` }}>
-                                <span>{field}</span>
-                                {val && <><span style={{ color: `${chipColor}50` }}>=</span><span style={{ color: 'var(--text-primary)', fontSize: '8px' }}>{val.length > 20 ? val.slice(0, 20) + '…' : val}</span></>}
-                              </div>
-                            )
-                          })()
-                        )
-                      })}
-                    </div>
-                  </div>
-                </>
-              )}
             </div>
 
-            {/* RIGHT — RECOMMENDED ACTIONS */}
-            <div style={S.rightCol}>
-              <div style={S.actionsLabel}>RECOMMENDED ACTIONS</div>
-              <div style={S.stepsList}>
-                {(triage.recommendations ?? []).map((rec, i) => {
-                  const prov = triage.recommendation_provenance?.[i]
-                  const provColors = { enrichment_confirmed: 'var(--amber)', behavioral_heuristic: '#6B7FD4', account_action: '#E57373', forensic: '#9E9E9E', known_good_override: '#4CAF50' }
-                  const provLabels = { enrichment_confirmed: 'CTI', behavioral_heuristic: 'HEURISTIC', account_action: 'ACCOUNT', forensic: 'FORENSIC', known_good_override: 'KNOWN-GOOD' }
+            {/* RIGHT — EVIDENCE */}
+            <div style={{ ...S.rightCol, justifyContent: 'flex-start', alignItems: 'flex-start' }}>
+              <div style={S.sectionLabel}>EVIDENCE</div>
+              <div style={S.evidenceChips}>
+                {(triage.evidence ?? []).map((item, i) => {
+                  const eqIdx = item.indexOf('=')
+                  const field = eqIdx > -1 ? item.slice(0, eqIdx) : item
+                  const val   = eqIdx > -1 ? item.slice(eqIdx + 1) : ''
                   return (
-                    <div key={i} style={{ ...S.step, position: 'relative' }}>
-                      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
-                        <div style={S.stepNum}>{String(i + 1).padStart(2, '0')}</div>
-                        {i < triage.recommendations.length - 1 && <div style={{ width: '0.5px', flex: '1', minHeight: '6px', background: 'var(--border-bright)', margin: '2px 0' }} />}
-                      </div>
-                      <div style={{ flex: 1, paddingBottom: i === triage.recommendations.length - 1 ? 0 : '8px' }}>
-                        <div style={S.stepText}>{rec}</div>
-                        {prov && (
-                          <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: provColors[prov] ?? 'var(--text-muted)', letterSpacing: '0.1em', marginTop: '-4px', paddingBottom: '4px' }}>▲ {provLabels[prov] ?? prov}</div>
-                        )}
-                      </div>
-                    </div>
+                    (() => {
+                      const isIP = /^\d{1,3}(\.\d{1,3}){3}$/.test(val) || field.toLowerCase().includes('ip') || field.toLowerCase().includes('address')
+                      const isUser = field.toLowerCase().includes('user') || field.toLowerCase().includes('subject') || field.toLowerCase().includes('target')
+                      const chipColor = isIP ? '#64B5F6' : isUser ? '#CE93D8' : 'var(--amber)'
+                      const chipBg = isIP ? 'rgba(100,181,246,0.1)' : isUser ? 'rgba(206,147,216,0.1)' : 'var(--amber-15)'
+                      const chipBorder = isIP ? 'rgba(100,181,246,0.3)' : isUser ? 'rgba(206,147,216,0.3)' : 'var(--amber-40)'
+                      return (
+                        <div key={i} style={{ ...S.chip, color: chipColor, background: chipBg, border: `0.5px solid ${chipBorder}` }}>
+                          <span>{field}</span>
+                          {val && <><span style={{ color: `${chipColor}50` }}>=</span><span style={{ color: 'var(--text-primary)', fontSize: '8px' }}>{val.length > 20 ? val.slice(0, 20) + '…' : val}</span></>}
+                        </div>
+                      )
+                    })()
                   )
                 })}
               </div>
             </div>
           </div>
 
-          {/* ENGINE DECISION TRACE */}
+          {/* 4. LOW_CONFIDENCE BANNER + ENGINE DECISION TRACE */}
+          {isLowConfidence && (
+            <div style={{ padding: '6px 22px', background: 'rgba(245,158,11,0.06)', borderBottom: '0.5px solid var(--amber-40)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--amber)', letterSpacing: '0.1em' }}>⚠ LOW_CONFIDENCE_VERDICT</span>
+              <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--text-muted)' }}>behavioral signal exists but normalization quality or signal weight is insufficient for high confidence — validate trace before acting</span>
+            </div>
+          )}
+
           {decisionTrace.length > 0 && (
             <div style={{ ...S.reasoningSection, marginBottom: 0, paddingBottom: '14px', borderBottom: '0.5px solid var(--border)' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
@@ -403,22 +701,77 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
             </div>
           )}
 
-          {/* STRUCTURED REASONING */}
-          <div style={S.reasoningSection}>
-            <div style={S.sectionLabel}>ARBITER REASONING</div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
-              {reasoningSentences.map((sentence, i) => (
-                <div key={i} style={{ display: 'flex', gap: '10px', padding: '7px 0', borderBottom: i < reasoningSentences.length - 1 ? '0.5px solid var(--border)' : 'none' }}>
-                  <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--amber)', letterSpacing: '0.1em', minWidth: '90px', paddingTop: '1px', opacity: 0.7 }}>
-                    {reasoningLabels[i] ?? `POINT ${i + 1}`}
+          {/* 5. RECOMMENDED ACTIONS — full width, signal-rule provenance */}
+          <div style={{ padding: '14px 22px', borderBottom: '0.5px solid var(--border)', borderTop: '0.5px solid var(--border)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+              <div style={S.actionsLabel}>RECOMMENDED ACTIONS</div>
+              <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>DETERMINISTIC · SIGNAL-DERIVED</span>
+            </div>
+            <div style={S.stepsList}>
+              {(triage.recommendations ?? []).map((rec, i) => {
+                const signalRule = triage.recommendation_provenance?.[i]
+                return (
+                  <div key={i} style={{ ...S.step, position: 'relative' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
+                      <div style={S.stepNum}>{String(i + 1).padStart(2, '0')}</div>
+                      {i < triage.recommendations.length - 1 && (
+                        <div style={{ width: '0.5px', flex: '1', minHeight: '6px', background: 'var(--border-bright)', margin: '2px 0' }} />
+                      )}
+                    </div>
+                    <div style={{ flex: 1, paddingBottom: i === triage.recommendations.length - 1 ? 0 : '8px' }}>
+                      <div style={S.stepText}>{rec}</div>
+                      {signalRule && (
+                        <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.1em', marginTop: '2px' }}>
+                          ↳ {signalRule}
+                        </div>
+                      )}
+                    </div>
                   </div>
-                  <div style={{ fontSize: '11px', color: 'var(--text-secondary)', lineHeight: '1.6', flex: 1 }}>{sentence}</div>
+                )
+              })}
+              {(!triage.recommendations || triage.recommendations.length === 0) && (
+                <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>
+                  No behavioral signals generated investigation hypotheses for this alert.
                 </div>
-              ))}
+              )}
             </div>
           </div>
 
-          {/* CONTAINMENT CTA */}
+          {/* 6. BEHAVIORAL SYNTHESIS — LLM layer, explicit epistemic marker */}
+          <div style={{ padding: '14px 22px', borderBottom: '0.5px solid var(--border)', background: 'rgba(100,181,246,0.02)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', letterSpacing: '0.18em', color: '#64B5F6', textTransform: 'uppercase' }}>
+                  BEHAVIORAL SYNTHESIS
+                </div>
+                <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'rgba(100,181,246,0.6)', background: 'rgba(100,181,246,0.08)', border: '0.5px solid rgba(100,181,246,0.2)', borderRadius: '2px', padding: '1px 6px', letterSpacing: '0.06em' }}>
+                  LLM-GENERATED
+                </span>
+              </div>
+              <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.06em' }}>
+                not in forensic export
+              </span>
+            </div>
+
+            <div style={{ background: 'rgba(100,181,246,0.04)', borderLeft: '2px solid rgba(100,181,246,0.4)', borderRadius: '0 4px 4px 0', padding: '12px 16px' }}>
+              <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.8' }}>
+                {triage.reasoning
+                  ? (typeof triage.reasoning === 'string'
+                      ? triage.reasoning
+                      : Array.isArray(triage.reasoning)
+                        ? triage.reasoning.join(' ')
+                        : triage.reasoning?.text ?? '')
+                  : <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono), monospace', fontSize: '10px' }}>No synthesis available — deterministic verdict stands alone.</span>
+                }
+              </div>
+            </div>
+
+            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--text-muted)', letterSpacing: '0.04em', marginTop: '8px', lineHeight: '1.5' }}>
+              This synthesis is pattern-based interpretation generated by a language model. It represents a plausible reading of the combined signals — not a verified conclusion. The ENGINE DECISION TRACE above this section is the authoritative ground truth.
+            </div>
+          </div>
+
+          {/* 7. CONTAINMENT CTA */}
           <div style={S.containmentSection}>
             <div style={S.containmentLeft}>
               <div style={{ display: 'flex', gap: '10px', marginBottom: '5px' }}>
@@ -441,6 +794,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
               {result && (
                 <button
                   onClick={() => {
+                    // reasoning excluded — LLM synthesis is not evidence
                     const forensic = {
                       case_id: result?.meta?.alertType ?? 'UNKNOWN',
                       timestamp: new Date().toISOString(),
@@ -458,6 +812,8 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                       enrichment_sources: result?.meta?.enrichmentSources ?? [],
                       correlated: result?.meta?.correlated ?? false,
                       parse_quality: result?.meta?.parseQuality ?? 'unknown',
+                      verdict_class: result?.triage?.verdict_class ?? result?.meta?.verdictClass ?? 'UNKNOWN',
+                      verdict_reliability_class: result?.triage?.verdict_reliability_class ?? result?.meta?.verdictReliabilityClass ?? 'UNKNOWN',
                     }
                     navigator.clipboard.writeText(JSON.stringify(forensic, null, 2))
                   }}

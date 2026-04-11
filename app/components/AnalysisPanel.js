@@ -503,6 +503,8 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                     quality_factor: triage.quality_factor ?? result?.meta?.quality_factor ?? 'UNKNOWN',
                     mitre_id: triage.mitre_id,
                     mitre_name: triage.mitre_name,
+                    tactic: triage.tactic,
+                    mitre_tactic: triage.mitre_tactic,
                     affected_asset: triage.affected_asset,
                     asset_is_critical: triage.asset_is_critical,
                     evidence: triage.evidence,

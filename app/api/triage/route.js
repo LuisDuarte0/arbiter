@@ -30,9 +30,11 @@ const SHARED_INFRASTRUCTURE_CIDRS = [
 
 function normalizeUsernameForCorrelation(username) {
   if (!username) return null
-  let normalized = username.toLowerCase().trim()
-  // Strip domain prefix: CORP\jsmith → jsmith, jsmith@corp.com → jsmith
-  normalized = normalized.replace(/^[^\\]+\\/, '').replace(/@.+$/, '')
+  // Strip DOMAIN\ prefix (Windows SAM format)
+  let normalized = username.replace(/^[^\\]+\\/, '')
+  // Strip @domain suffix (UPN format)
+  normalized = normalized.replace(/@.+$/, '')
+  normalized = normalized.toLowerCase().trim()
   // Strip common service account prefixes/suffixes
   normalized = normalized.replace(/^(svc[_-]|service[_-]|sa[_-])/, '').replace(/([_-]svc|[_-]service|[_-]sa|[_-]admin|[_-]adm)$/, '')
   // Remove non-alphanumeric except dot and hyphen
@@ -341,33 +343,16 @@ function validateAndOverrideTriage(triage, parsedAlert, enrichmentJudgment, redi
     '255.255.255.255',                       // Broadcast
   ])
 
-  // 1. Field sync — tactic must equal mitre_tactic
-  if (triage.tactic !== triage.mitre_tactic) {
-    triage.tactic = triage.mitre_tactic
-    overrides.push('tactic_sync')
-  }
-
-  // 2. Classification must not contain MITRE ID
+  // 1. Classification must not contain MITRE ID
   if (/T\d{4}(\.\d{3})?/.test(triage.classification)) {
     triage.classification = triage.classification.replace(/T\d{4}(\.\d{3})?\s*/g, '').trim()
     overrides.push('classification_cleaned')
   }
 
-  // 3. Severity floor — confirmed malicious enrichment cannot result in LOW/MEDIUM
-  if (enrichmentJudgment.judgment === 'CONFIRMED_MALICIOUS' && ['LOW', 'MEDIUM'].includes(triage.severity)) {
-    triage.severity = 'HIGH'
-    overrides.push('severity_floor_enrichment')
-  }
-
-  // 4. Severity floor — active campaign cannot be below CRITICAL
-  const frequencyMultiplier = redisHits?.reduce((max, h) => Math.max(max, h.count ?? 0), 0) ?? 0
-  const uniqueAssets = redisHits?.reduce((set, h) => { (h.assets ?? []).forEach(a => set.add(a)); return set }, new Set())?.size ?? 0
-  if (frequencyMultiplier >= 2 && uniqueAssets >= 2 && triage.severity !== 'CRITICAL') {
-    triage.severity = 'CRITICAL'
-    overrides.push('severity_floor_campaign')
-  }
-
-  // 5. Asset criticality — enforce deterministically
+  // 2. Asset criticality — enforce deterministically
+  // TODO: migrate to ACS normalization layer (mappers)
+  // Currently compensates for asset criticality patterns not
+  // captured during normalization. Keep until mapper migration.
   const triageAssetName = (triage.affected_asset ?? '').toUpperCase()
   const knownCriticalPatterns = /\b(DC|PDC|BDC|ADC|ADDC|SQL|DB[-_]|[-_]DB|ORA|ORACLE|POSTGRES|MYSQL|BACKUP|BKP|VEEAM|EXCHANGE|EXCH|MAIL)\b/i
   if (knownCriticalPatterns.test(triageAssetName) && !triage.asset_is_critical) {
@@ -380,7 +365,9 @@ function validateAndOverrideTriage(triage, parsedAlert, enrichmentJudgment, redi
     overrides.push('asset_criticality_corrected')
   }
 
-  // 6. Confidence bounds
+  // 3. Confidence bounds
+  // TODO: migrate to end of aggregateSignals() behavioral_confidence
+  // computation. Keep here as safety net until then.
   triage.confidence = Math.max(0, Math.min(100, Math.round(triage.confidence ?? 50)))
 
   return { triage, overrides }
@@ -460,7 +447,7 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
 
   for (const cp of criticalPatterns) {
     if (cp.pattern.test(combinedAssets)) {
-      signals.push({ rule: 'ASSET_CRITICAL', classification: 'Critical Asset Targeted', label: cp.label, severity: cp.severity, confidence: cp.confidence, weight: cp.weight, evidence: [`asset=${asset || parsed.allAssets}`], category: 'asset', source: 'windows-eventid', signal_layer: 'enrichment', explanation_weight: cp.severity === 'CRITICAL' ? 'high' : 'medium', confidence_boost: cp.severity === 'CRITICAL' ? 15 : 10 })
+      signals.push({ rule: 'ASSET_CRITICAL', classification: 'Critical Asset Targeted', label: cp.label, severity: cp.severity, confidence: cp.confidence, weight: cp.weight, evidence: [`asset=${asset || parsed.allAssets}`], category: 'asset', source: 'windows-eventid', signal_layer: 'asset', explanation_weight: cp.severity === 'CRITICAL' ? 'high' : 'medium', confidence_boost: cp.severity === 'CRITICAL' ? 15 : 10 })
       break
     }
   }
@@ -641,10 +628,13 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
       } else if (acsCount > 5) {
         signals.push({ rule: 'ACS_AUTH_FAILURE_HIGH', classification: 'Repeated Authentication Failures', label: `Repeated authentication failures (${acsCount}×) via ${acsVendor}`, severity: 'HIGH', confidence: 75, weight: 3, evidence: [`event_type=auth`, `event_outcome=failure`, `count=${acsCount}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110' })
       } else {
-        // ACS_AUTH_FAILURE_LOW: event_type + event_outcome pair.
-        // Blocked on Windows — both derived:event_id_table, not independent. Windows coverage via LOGON_FAILURE_LOW.
-        if (checkIndependencePair(acs, 'event_type', 'event_outcome')) {
-          signals.push({ rule: 'ACS_AUTH_FAILURE_LOW', classification: 'Authentication Failure', label: `Authentication failure via ${acsVendor}`, severity: 'LOW', confidence: 55, weight: 2, evidence: [`event_type=auth`, `event_outcome=failure`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110', independence_pair: ['event_type', 'event_outcome'] })
+        // ACS_AUTH_FAILURE_LOW: (event_outcome, src_ip) independence pair.
+        // Belt-and-suspenders: explicit Windows guard + independence gate.
+        // Windows: both event_type and event_outcome share derived:event_id_table —
+        // the gate alone correctly blocks it, but the vendor guard makes intent explicit.
+        // Windows coverage is via LOGON_FAILURE_LOW (EventID-based).
+        if (acsVendor !== 'windows' && checkIndependencePair(acs, 'event_outcome', 'src_ip')) {
+          signals.push({ rule: 'ACS_AUTH_FAILURE_LOW', classification: 'Authentication Failure', label: `Authentication failure via ${acsVendor}`, severity: 'LOW', confidence: 55, weight: 2, evidence: [`event_type=auth`, `event_outcome=failure`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110', independence_pair: ['event_outcome', 'src_ip'] })
         }
       }
     }
@@ -883,9 +873,11 @@ function computeQualityFactor(normalizationScore, parseQuality, signals) {
     }).filter(Boolean)
     return new Set(tacticGroups).size >= 3
   })()
+  // 'generic' = vendor detection failed entirely, not just partial parse
+  if (parseQuality === 'generic' || parseQuality === 'unknown') return 'UNKNOWN'
   if (normalizationScore >= 0.85 && parseQuality === 'structured' && !hasSignalDivergence) return 'HIGH'
   if (normalizationScore >= 0.60 || (parseQuality === 'structured' && normalizationScore >= 0.45)) return 'MEDIUM'
-  if (normalizationScore < 0.30 || parseQuality === 'unknown') return 'UNKNOWN'
+  if (normalizationScore < 0.30) return 'UNKNOWN'
   return 'LOW'
 }
 
@@ -915,12 +907,14 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
   const severityByRank = { 4: 'CRITICAL', 3: 'HIGH', 2: 'MEDIUM', 1: 'LOW' }
 
   // ── Layer separation ────────────────────────────────────────────────────────
-  const isBehavioral  = s => s.signal_layer === 'behavioral' || (!s.signal_layer && (s.category === 'behavioral' || s.category === 'asset'))
+  const isBehavioral  = s => s.signal_layer === 'behavioral' || (!s.signal_layer && s.category === 'behavioral')
   const isEnrichment  = s => s.signal_layer === 'enrichment'  || (!s.signal_layer && s.category === 'enrichment')
   const isTemporal    = s => s.signal_layer === 'temporal' || s.frequency === true || s.category === 'frequency'
+  const isAsset       = s => s.signal_layer === 'asset' || s.category === 'asset'
   const behavioralSignals = signals.filter(isBehavioral)
   const enrichmentSignals = signals.filter(isEnrichment)
   const temporalSignals   = signals.filter(isTemporal)
+  const assetSignals      = signals.filter(isAsset)
 
   const sortLayer = arr => [...arr].sort((a, b) => {
     const wDiff = b.weight - a.weight
@@ -930,6 +924,7 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
   const sortedBehavioral = sortLayer(behavioralSignals)
   const sortedEnrichment = sortLayer(enrichmentSignals)
   const sortedTemporal   = sortLayer(temporalSignals)
+  const sortedAsset      = sortLayer(assetSignals)
 
   const hasBehavioral = sortedBehavioral.length > 0
 
@@ -992,7 +987,7 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
   let finalSeverity = severityByRank[flooredSeverityRank] ?? 'LOW'
   let finalSeverityRankMutable = flooredSeverityRank
   const severityWasFloored = hasConfirmedMalicious && flooredSeverityRank > finalSeverityRank
-  const assetIsCritical = signals.some(s => s.category === 'asset' && ['CRITICAL','HIGH'].includes(s.severity))
+  const assetIsCritical = assetSignals.some(s => ['CRITICAL','HIGH'].includes(s.severity))
 
   // ── Temporal severity floor ────────────────────────────────────────────────
   // Temporal signals (recurrence, cross-asset correlation) provide a minimum
@@ -1148,6 +1143,7 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
     behavioral:      sortedBehavioral.length,
     enrichment:      enrichmentSignals.length,
     temporal:        sortedTemporal.length,
+    asset:           assetSignals.length,
     dominant_layer:  dominant?.signal_layer ?? (hasBehavioral ? 'behavioral' : 'enrichment'),
     severity_boosted: finalSeverityRank > baseSeverityRank,
   }
@@ -1517,7 +1513,7 @@ async function enrichIP(ip) {
     ).then(r => r.json()),
 
     fetch(
-      `https://otx.alienvault.com/api/v1/indicators/IPv4/${ip}/general`,
+      `https://otx.alienvault.com/api/v1/indicators/${ip.includes(':') ? 'IPv6' : 'IPv4'}/${ip}/general`,
       { headers: { 'X-OTX-API-KEY': process.env.OTX_API_KEY } }
     ).then(r => r.json()),
   ])
@@ -2129,6 +2125,27 @@ export async function POST(request) {
             deterministicMitre: null,
           })
         }
+        // INSUFFICIENT_DATA override — fires when the system could not meaningfully
+        // process the input at all, not merely when no signals were found.
+        // NO_DETECTION = system understood the input, found nothing.
+        // INSUFFICIENT_DATA = system could not process the input.
+        const isGenericVendor = (acsObject?.meta?.vendor_origin ?? 'unknown') === 'unknown'
+        const isLowNormScore  = (acsObject?.meta?.normalization_score ?? 0) <= 0.1
+        const hasNoIPs        = ips.length === 0
+        const isInsufficientData = isGenericVendor && isLowNormScore && hasNoIPs
+
+        if (isInsufficientData) {
+          finalVerdict.verdictClass = 'INSUFFICIENT_DATA'
+          finalVerdict.verdictReliabilityClass = 'TRACE_REQUIRED'
+        }
+
+        // Override parseQuality to 'generic' when vendor detection failed.
+        // parseAlert() cannot know the vendor — normalize() detects it.
+        // Reconcile here so quality_factor reflects actual parse fidelity.
+        if (isGenericVendor && parsedAlert.parseQuality !== 'structured') {
+          parsedAlert.parseQuality = 'generic'
+        }
+
         const isActiveCampaign = (finalVerdict?.signals ?? signals).some(
           s => s.rule === 'CORRELATED_INDICATOR_ACTIVITY'
         )
@@ -2266,18 +2283,13 @@ export async function POST(request) {
             if (fb) return getMitreName(fb.id) ?? finalVerdict.classification
             return finalVerdict.classification
           })(),
-          tactic: (() => {
-            const classificationTactic = getClassificationMitre(finalVerdict.classification)?.tactic
-            if (classificationTactic) return classificationTactic
-            if (finalVerdict.classification !== 'UNKNOWN' && narrator?.tactic && narrator.tactic !== 'Unknown') return narrator.tactic
-            return 'Unknown'
-          })(),
-          mitre_tactic: (() => {
-            const classificationTactic = getClassificationMitre(finalVerdict.classification)?.tactic
-            if (classificationTactic) return classificationTactic
-            if (finalVerdict.classification !== 'UNKNOWN' && narrator?.mitre_tactic && narrator.mitre_tactic !== 'Unknown') return narrator.mitre_tactic
-            return 'Unknown'
-          })(),
+          tactic: narrator?.tactic
+               ?? narratorFallback.tactic
+               ?? 'Unknown',
+          mitre_tactic: getMitreTactic(finalVerdict.deterministicMitre)
+                     ?? narrator?.tactic
+                     ?? narratorFallback.tactic
+                     ?? 'Unknown',
           recommendations:           deterministicRecommendations,
           recommendation_provenance: deterministicProvenance,
           verdict_class:             finalVerdict.verdictClass,
@@ -2299,7 +2311,7 @@ export async function POST(request) {
         triage.recommendations = finalRecommendations
         triage.recommendation_provenance = finalProvenance
 
-        if (triage.tactic !== triage.mitre_tactic) triage.mitre_tactic = triage.tactic
+        // tactic (narrator free text) and mitre_tactic (deterministic lookup) may legitimately differ — no sync
 
         const requiredTriageFields = ['severity','classification','confidence','asset_is_critical','evidence','indicators','tactic','mitre_id','mitre_name','mitre_tactic','recommendations','reasoning']
         const missingFields = requiredTriageFields.filter(f => !(f in triage) || triage[f] === null || triage[f] === undefined)

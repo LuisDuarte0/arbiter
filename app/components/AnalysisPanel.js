@@ -259,7 +259,14 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
               <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '10px', color: 'var(--text-muted)', marginTop: '6px', lineHeight: '1.6' }}>
                 {verdictClass === 'INSUFFICIENT_DATA'
                   ? 'The ACS normalization layer could not extract sufficient independent fields from this log. Review the raw input and verify the correct mapper applies.'
-                  : 'Neither behavioral primitives nor domain-specific detection signals could be derived from the normalized data. No defensible verdict can be issued. Review the raw log manually.'}
+                  : (() => {
+                      const hasEnrichment = result?.meta?.enrichmentSources?.length > 0
+                        || result?.enrichment?.judgment === 'CONFIRMED_MALICIOUS'
+                        || result?.enrichment?.judgment === 'SUSPICIOUS'
+                      return hasEnrichment
+                        ? "No behavioral signals could be derived from this log format. External threat intelligence is available in the Intel panel — the source IP has been evaluated against external databases. Review the raw log manually for structural context."
+                        : "Neither behavioral primitives nor domain-specific detection signals could be derived from the normalized data. No defensible verdict can be issued. Review the raw log manually."
+                    })()}
               </div>
             </div>
             <div style={S.verdictRight}>

@@ -22,6 +22,8 @@ export function mapLinux(text) {
     if (/COMMAND=/i.test(text)) return 'command_executed'
     if (/session opened/i.test(text)) return 'session_opened'
     if (/session closed/i.test(text)) return 'session_closed'
+    if (/curl\s+.*https?:|wget\s+.*https?:|base64\s+-d|\|\s*bash\b/i.test(text))
+      return 'command_executed'
     return 'unknown'
   })()
 
@@ -50,7 +52,14 @@ export function mapLinux(text) {
     const sudoCmd    = get(/COMMAND=(.+)$/m)
     const cronCmd    = get(/CMD\s+\((.+)\)$/m)
     const genericCmd = get(/CMD=(.+)$/m)
-    return sudoCmd ?? cronCmd ?? genericCmd ?? null
+    // Fallback: extract message body from process log format
+    // Matches: ProcessName[PID]: message body
+    // or:      ProcessName: message body
+    // Used for bash[3301]: curl ..., sh[1234]: python -c ...
+    const processMsg = (sudoCmd ?? cronCmd ?? genericCmd)
+      ? null
+      : get(/\w+(?:\[\d+\])?:\s+(.+)$/m)
+    return sudoCmd ?? cronCmd ?? genericCmd ?? processMsg ?? null
   })()
 
   const srcPortRaw = get(/port\s+(\d+)/i)
@@ -79,7 +88,15 @@ export function mapLinux(text) {
       task_name:    w(null,                                                     null),
       service_name: w(null,                                                     null),
       command_line: w(cmdLineVal,                                               'raw:syslog:message:command_line'),
-      process_name: w(get(/^\w+\s+\S+\s+(\S+)\[/),                            'raw:syslog:header:process_name'),
+      process_name: (() => {
+        // Standard syslog: Month Day Time Hostname Process[PID]: message
+        // Must skip 4 tokens before capturing process name
+        const withPid = get(/^\w+\s+\d+\s+\S+\s+\S+\s+(\w+)\[/m)
+        // Colon-terminated: sudo: kernel: crond:
+        const withColon = withPid ? null : get(/^\w+\s+\d+\s+\S+\s+\S+\s+(\w+):/m)
+        const val = withPid ?? withColon ?? null
+        return w(val, val ? 'raw:syslog:header:process_name' : null)
+      })(),
       count:        w(countVal,                                                 'derived:text_pattern:failure_count'),
       logon_type:   w(null,                                                     null),
       target_user:  w(null,                                                     null),

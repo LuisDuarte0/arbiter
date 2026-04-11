@@ -420,6 +420,29 @@ function checkIndependencePairDirect(fieldA, fieldB) {
   return true
 }
 
+/**
+ * ARBITER ARCHITECTURAL BOUNDARY — SINGLE-EVENT TRIAGE MODEL
+ *
+ * ARBITER is designed for deep single-event triage, not log aggregation.
+ * Each submission is treated as one logical event. When multi-line input
+ * is submitted, ARBITER extracts the primary detectable primitive from
+ * the first parseable event and produces a single verdict.
+ *
+ * This is a design statement, not a limitation:
+ * - SIEMs aggregate. ARBITER triages with depth and traceability.
+ * - These are different tools for different purposes.
+ * - A single-event model enables provenance tracking, independence
+ *   gate enforcement, and deterministic signal derivation that
+ *   volume-based aggregation cannot provide.
+ *
+ * Consequence for multi-line logs:
+ * - Only the first extractable command-line primitive produces signals.
+ * - Analysts submitting multi-event sequences (e.g. bash execution
+ *   chains) should submit each event separately for individual verdicts.
+ * - This boundary is intentional and documented as scope, not a gap.
+ *
+ * This constraint is tracked as Issue 10.3 in the architectural map.
+ */
 function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
   const signals = []
 
@@ -778,20 +801,29 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
   // Gate: command_line + process_name independently sourced (command_line is raw extraction, process_name from separate field)
   if (acsv && acsv.command_line && normScore >= 0.2) {
     const cmd = acsv.command_line.toLowerCase()
-    const hasCmdGate = checkIndependencePair(acs, 'command_line', 'process_name')
+    const hasCmdGate = checkIndependencePairOr(acs,
+      ['command_line', 'process_name'],
+      ['command_line', 'host']
+    )
 
     if (hasCmdGate && /wget|curl.*http|bash.*-c.*http|python.*urllib|nc\s+-e|ncat|mshta.*http|certutil.*http|certutil.*-urlcache|bitsadmin.*http|regsvr32.*http|rundll32.*http|wscript.*http/i.test(cmd)) {
-      signals.push({ rule: 'ACS_REMOTE_DOWNLOAD', classification: 'Remote File Download via Command Line', label: `Remote download/execution via command line (${acsVendor})`, severity: 'HIGH', confidence: 82, weight: 4, evidence: [`command_line=${acsv.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1105', independence_pair: ['command_line', 'process_name'] })
+      signals.push({ rule: 'ACS_REMOTE_DOWNLOAD', classification: 'Remote File Download via Command Line', label: `Remote download/execution via command line (${acsVendor})`, severity: 'HIGH', confidence: 82, weight: 4, evidence: [`command_line=${acsv.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1105', independence_pair: checkIndependencePair(acs, 'command_line', 'process_name') ? ['command_line', 'process_name'] : ['command_line', 'host'] })
     }
 
     if (hasCmdGate && /base64.*decode|echo.*\|.*base64|openssl.*base64|base64\s+-d/i.test(cmd)) {
-      signals.push({ rule: 'ACS_BASE64_EXECUTION', classification: 'Obfuscated Command Execution', label: `Base64-encoded command execution (${acsVendor})`, severity: 'HIGH', confidence: 80, weight: 4, evidence: [`command_line=${acsv.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1027', independence_pair: ['command_line', 'process_name'] })
+      signals.push({ rule: 'ACS_BASE64_EXECUTION', classification: 'Obfuscated Command Execution', label: `Base64-encoded command execution (${acsVendor})`, severity: 'HIGH', confidence: 80, weight: 4, evidence: [`command_line=${acsv.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1027', independence_pair: checkIndependencePair(acs, 'command_line', 'process_name') ? ['command_line', 'process_name'] : ['command_line', 'host'] })
     }
 
     const isSudoContext = acsVendor === 'linux' && (acsv.action === 'privilege_escalation' || acsv.action === 'command_executed')
     const shellBinary = /\/(bash|sh|python|perl|ruby|php|nc|ncat)\s*$|sudo\s+(bash|sh|python|perl|ruby|php|nc|ncat)/i.test(cmd)
-    if (isSudoContext && shellBinary && hasCmdGate) {
-      signals.push({ rule: 'ACS_SUDO_SHELL', classification: 'Privilege Abuse via Sudo Shell', label: `Sudo to interactive shell (${acsVendor})`, severity: 'CRITICAL', confidence: 90, weight: 4, evidence: [`command_line=${acsv.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1548.003', independence_pair: ['command_line', 'process_name'] })
+    // ACS_SUDO_SHELL uses its own gate — falls back to (command_line, user)
+    // when process_name is null (sudo: colon-format logs without [pid])
+    const hasSudoGate = checkIndependencePairOr(acs,
+      ['command_line', 'process_name'],
+      ['command_line', 'user']
+    )
+    if (isSudoContext && shellBinary && hasSudoGate) {
+      signals.push({ rule: 'ACS_SUDO_SHELL', classification: 'Privilege Abuse via Sudo Shell', label: `Sudo to interactive shell (${acsVendor})`, severity: 'CRITICAL', confidence: 90, weight: 4, evidence: [`command_line=${acsv.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1548.003', independence_pair: hasCmdGate ? ['command_line', 'process_name'] : ['command_line', 'user'] })
     }
   }
 

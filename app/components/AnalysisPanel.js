@@ -133,7 +133,35 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
 
   const isLowConfidence = verdictClass === 'LOW_CONFIDENCE_VERDICT'
 
+  const displayConfidence = triage?.behavioral_confidence ?? triage?.confidence ?? 0
+  const qualityFactor = triage?.quality_factor ?? result?.meta?.quality_factor ?? 'UNKNOWN'
+  const qfColors = {
+    HIGH:    { color: 'var(--green)',      label: 'DATA: HIGH' },
+    MEDIUM:  { color: 'var(--amber)',      label: 'DATA: MED'  },
+    LOW:     { color: 'var(--red)',        label: 'DATA: LOW'  },
+    UNKNOWN: { color: 'var(--text-muted)', label: 'DATA: ?'    },
+  }
+  const qf = qfColors[qualityFactor] ?? qfColors.UNKNOWN
+
   const isSurfaceSafe = verdictReliabilityClass === 'SURFACE_SAFE'
+
+  const vendorOrigin = result?.meta?.vendor_origin ?? 'unknown'
+
+  const vendorDisplayName = {
+    windows:    'Windows Event Log',
+    linux:      'System Auth Log',
+    cloudtrail: 'AWS CloudTrail',
+    generic:    'Unknown Log Source',
+    unknown:    'Unknown Log Source',
+  }[vendorOrigin] ?? 'Unknown Log Source'
+
+  const vendorPlaybookLabel = {
+    windows:    'PowerShell · CMD · Investigation · Warnings',
+    linux:      'Bash · Journalctl · Investigation · Warnings',
+    cloudtrail: 'AWS CLI · IAM · Investigation · Warnings',
+    generic:    'Investigation · Warnings',
+    unknown:    'Investigation · Warnings',
+  }[vendorOrigin] ?? 'Investigation · Warnings'
 
   return (
     <div className="arb-panel arb-analysis">
@@ -305,15 +333,15 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
             <div style={S.verdictRight}>
               <div style={S.confBlock}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-                  <span style={S.confBig}>{triage.confidence}</span>
+                  <span style={S.confBig}>{displayConfidence}</span>
                   <span style={S.confUnit}>%</span>
                 </div>
-                <div style={S.confLabel}>CONFIDENCE</div>
-                <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--amber)', letterSpacing: '0.06em', marginTop: '3px', textAlign: 'right' }}>
-                  ENRICHMENT-BASED
+                <div style={S.confLabel}>BEHAVIORAL CONFIDENCE</div>
+                <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: qf.color, letterSpacing: '0.06em', marginTop: '3px', textAlign: 'right' }}>
+                  {qf.label}
                 </div>
                 <div style={S.confBarWrap}>
-                  <div style={{ height: '100%', background: 'var(--amber)', borderRadius: '1px', width: `${triage.confidence}%`, opacity: '0.6' }} />
+                  <div style={{ height: '100%', background: 'var(--amber)', borderRadius: '1px', width: `${displayConfidence}%`, opacity: '0.6' }} />
                 </div>
               </div>
             </div>
@@ -329,7 +357,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                 <div style={S.sectionLabel}>MITRE ATT&CK</div>
                 <div style={S.metaId}>{triage.mitre_id}</div>
                 <div style={S.metaName}>{triage.mitre_name}</div>
-                <div style={S.metaDetail}>{triage.mitre_tactic} · {result?.meta?.vendor_origin ?? 'Unknown'} · Security Logs</div>
+                <div style={S.metaDetail}>{triage.mitre_tactic} · {vendorDisplayName}</div>
               </div>
               <div style={S.divider} />
               <div style={S.metaBlock}>
@@ -464,7 +492,8 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                     timestamp: new Date().toISOString(),
                     severity: triage.severity,
                     classification: triage.classification,
-                    confidence: triage.confidence,
+                    behavioral_confidence: triage.behavioral_confidence ?? triage.confidence,
+                    quality_factor: triage.quality_factor ?? result?.meta?.quality_factor ?? 'UNKNOWN',
                     mitre_id: triage.mitre_id,
                     mitre_name: triage.mitre_name,
                     affected_asset: triage.affected_asset,
@@ -477,7 +506,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                     correlated: result?.meta?.correlated ?? false,
                     parse_quality: result?.meta?.parseQuality ?? 'unknown',
                     verdict_class: triage.verdict_class ?? 'ENRICHMENT_ONLY_VERDICT',
-                    verdict_reliability_class: 'TRACE_REQUIRED',
+                    verdict_reliability_class: triage.verdict_reliability_class ?? 'TRACE_REQUIRED',
                   }
                   navigator.clipboard.writeText(JSON.stringify(forensic, null, 2))
                 }}
@@ -550,35 +579,25 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
             <div style={S.verdictRight}>
               <div style={S.confBlock}>
                 <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
-                  <span style={S.confBig}>{triage.confidence}</span>
+                  <span style={S.confBig}>{displayConfidence}</span>
                   <span style={S.confUnit}>%</span>
-                  {(() => {
-                    const penalties = (result?.meta?.decisionTrace ?? result?.meta?.deterministicOverrides ?? [])
-                      .filter(e => typeof e === 'object' && e.type === 'penalty')
-                    const totalPenalty = penalties.reduce((sum, p) => sum + (p.value ?? 0), 0)
-                    if (totalPenalty >= 0) return null
-                    return (
-                      <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--red)', letterSpacing: '0.04em' }}>
-                        ▼{Math.abs(totalPenalty)}
-                      </span>
-                    )
-                  })()}
                 </div>
-                <div style={S.confLabel}>CONFIDENCE</div>
-                <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.06em', marginTop: '3px', textAlign: 'right', lineHeight: '1.4', maxWidth: '80px' }}>
-                  DATA QUALITY<br/>+ SIGNAL STRENGTH
+                <div style={S.confLabel}>BEHAVIORAL CONFIDENCE</div>
+                <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: qf.color, letterSpacing: '0.06em', marginTop: '3px', textAlign: 'right' }}>
+                  {qf.label}
                 </div>
                 <div style={S.confBarWrap}>
-                  <div style={{ height: '100%', background: 'var(--amber)', borderRadius: '1px', width: `${triage.confidence}%` }} />
+                  <div style={{ height: '100%', background: 'var(--amber)', borderRadius: '1px', width: `${displayConfidence}%` }} />
                 </div>
                 {(() => {
                   const ct = decisionTrace.find(e => e.type === 'confidence')
                   if (!ct) return null
                   return (
                     <div style={{ marginTop: '6px', display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                      {ct.base        != null && <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>BASE <span style={{ color: 'var(--text-secondary)' }}>{ct.base}%</span></div>}
-                      {ct.campaignBonus  != null && <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>CAMPAIGN <span style={{ color: '#E57373' }}>+{ct.campaignBonus}%</span></div>}
-                      {ct.unknownPenalty != null && <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>UNKNOWN <span style={{ color: 'var(--text-muted)' }}>−{ct.unknownPenalty}%</span></div>}
+                      {ct.dominantConf     != null && <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>DOMINANT <span style={{ color: 'var(--text-secondary)' }}>{ct.dominantConf}%</span></div>}
+                      {ct.supportingContrib != null && ct.supportingContrib > 0 && <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>SUPPORTING <span style={{ color: 'var(--text-secondary)' }}>+{ct.supportingContrib}%</span></div>}
+                      {ct.temporalBoost    != null && ct.temporalBoost > 0 && <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>TEMPORAL <span style={{ color: '#64B5F6' }}>+{ct.temporalBoost}%</span></div>}
+                      {ct.enrichmentAlignment != null && ct.enrichmentAlignment > 0 && <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.08em' }}>ENRICHMENT ALIGN <span style={{ color: 'var(--green)' }}>+{ct.enrichmentAlignment}%</span></div>}
                     </div>
                   )
                 })()}
@@ -598,7 +617,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                 <div style={S.sectionLabel}>MITRE ATT&CK</div>
                 <div style={S.metaId}>{triage.mitre_id}</div>
                 <div style={S.metaName}>{triage.mitre_name}</div>
-                <div style={S.metaDetail}>{triage.mitre_tactic} · Windows · Security Logs</div>
+                <div style={S.metaDetail}>{triage.mitre_tactic} · {vendorDisplayName}</div>
               </div>
               <div style={S.divider} />
               <div style={S.metaBlock}>
@@ -688,8 +707,8 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                       <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: e.type === 'dominant' ? '10px' : '9px', color: e.type === 'dominant' ? 'var(--amber)' : 'var(--text-secondary)', lineHeight: '1.5', flex: 1, fontWeight: e.type === 'dominant' ? '600' : '400' }}>
                         {e.type === 'penalty' ? e.label.replace(/\s*[+-]?\d+\s*$/, '') : e.label}
                         {e.rule && <span style={{ color: 'var(--text-muted)', fontSize: '8px', fontWeight: '400' }}> [{e.rule}]</span>}
-                        {e.type === 'confidence' && e.base !== undefined && (
-                          <span style={{ color: 'var(--text-muted)', fontSize: '8px' }}> (base={e.base}, campaign=+{e.campaignBonus ?? 0}, parse=+{e.parseBonus ?? 0})</span>
+                        {e.type === 'confidence' && e.dominantConf !== undefined && (
+                          <span style={{ color: 'var(--text-muted)', fontSize: '8px' }}> (dominant={e.dominantConf}%, temporal=+{e.temporalBoost ?? 0}%)</span>
                         )}
                       </span>
                       {e.severity && <span className={`arb-badge arb-${e.severity?.toLowerCase()}`} style={{ fontSize: '7px', flexShrink: 0 }}>{e.severity}</span>}
@@ -787,7 +806,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                 ))}
               </div>
               <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-muted)' }}>
-                PowerShell · CMD · Investigation · Warnings
+                {vendorPlaybookLabel}
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
@@ -800,7 +819,8 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                       timestamp: new Date().toISOString(),
                       severity: triage.severity,
                       classification: triage.classification,
-                      confidence: triage.confidence,
+                      behavioral_confidence: triage.behavioral_confidence ?? triage.confidence,
+                      quality_factor: triage.quality_factor ?? result?.meta?.quality_factor ?? 'UNKNOWN',
                       mitre_id: triage.mitre_id,
                       mitre_name: triage.mitre_name,
                       affected_asset: triage.affected_asset,

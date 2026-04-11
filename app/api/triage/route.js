@@ -388,31 +388,36 @@ function validateAndOverrideTriage(triage, parsedAlert, enrichmentJudgment, redi
 
 // ── DECISION ENGINE ───────────────────────────────────────────────────────────
 
-// Provenance independence check — two ACS fields are independent when both have
-// non-null sources that are different, and neither is 'derived:event_id_table'
-// (Windows EventID-derived fields share the same lookup table and are not independent).
-function areProvenanceIndependent(fieldA, fieldB) {
-  if (!fieldA || !fieldB) return false
-  const srcA = fieldA.source
-  const srcB = fieldB.source
-  if (!srcA || !srcB) return false
-  if (srcA === srcB) return false
-  if (srcA === 'derived:event_id_table' && srcB === 'derived:event_id_table') return false
+// Provenance independence gate — declared pair variant.
+// fieldA, fieldB: string names of acs_data fields (e.g. 'action', 'user').
+// Returns true only when both fields are populated (non-null, non-empty, non-'unknown'),
+// have non-null sources, have distinct sources, and are not both 'derived:event_id_table'.
+function checkIndependencePair(acs, fieldA, fieldB) {
+  const a = acs?.[fieldA]
+  const b = acs?.[fieldB]
+  if (!a?.value || !b?.value) return false
+  if (a.value === 'unknown' || b.value === 'unknown') return false
+  if (!a.source || !b.source) return false
+  if (a.source === b.source) return false
+  if (a.source === 'derived:event_id_table' && b.source === 'derived:event_id_table') return false
   return true
 }
 
-// A behavioral signal is valid when at least 2 of its key input fields are
-// independently sourced (i.e., came from distinct raw data extractions).
-// fields: array of { value, source } objects from acs_data.
-function isValidBehavioralSignal(...fields) {
-  const populated = fields.filter(f => f?.value != null && f?.value !== '' && f?.value !== 'unknown')
-  if (populated.length < 2) return false
-  for (let i = 0; i < populated.length; i++) {
-    for (let j = i + 1; j < populated.length; j++) {
-      if (areProvenanceIndependent(populated[i], populated[j])) return true
-    }
-  }
-  return false
+// OR variant — signal has two valid evidence paths; either pair suffices.
+function checkIndependencePairOr(acs, pairA, pairB) {
+  return checkIndependencePair(acs, pairA[0], pairA[1])
+      || checkIndependencePair(acs, pairB[0], pairB[1])
+}
+
+// Direct variant — takes { value, source } objects directly (for resource proxy fields
+// constructed inline rather than named acs_data keys).
+function checkIndependencePairDirect(fieldA, fieldB) {
+  if (!fieldA?.value || !fieldB?.value) return false
+  if (fieldA.value === 'unknown' || fieldB.value === 'unknown') return false
+  if (!fieldA.source || !fieldB.source) return false
+  if (fieldA.source === fieldB.source) return false
+  if (fieldA.source === 'derived:event_id_table' && fieldB.source === 'derived:event_id_table') return false
+  return true
 }
 
 function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
@@ -510,8 +515,8 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
     }
     // MIMIKATZ requires independently-sourced command_line AND process_name — prevents false
     // positives from logs where both fields are derived from the same EventID lookup table
-    if (isMimikatz && areProvenanceIndependent(acsObject?.acs_data?.command_line, acsObject?.acs_data?.process_name)) {
-      signals.push({ rule: 'MIMIKATZ_DETECTED', classification: 'Mimikatz Credential Dumping', label: 'Mimikatz credential dumping detected', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1003.001', explanation_weight: 'high', confidence_boost: 15 })
+    if (isMimikatz && checkIndependencePair(acsObject?.acs_data, 'command_line', 'process_name')) {
+      signals.push({ rule: 'MIMIKATZ_DETECTED', classification: 'Mimikatz Credential Dumping', label: 'Mimikatz credential dumping detected', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1003.001', explanation_weight: 'high', confidence_boost: 15, independence_pair: ['command_line', 'process_name'] })
     }
   }
 
@@ -523,8 +528,51 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
   if (redisHits?.length > 0) {
     const maxCount = redisHits.reduce((max, h) => Math.max(max, h.count ?? 0), 0)
     const uniqueAssets = new Set(redisHits.flatMap(h => h.assets ?? [])).size
-    if (maxCount >= 2 && uniqueAssets >= 2) signals.push({ rule: 'CORRELATED_INDICATOR_ACTIVITY', classification: 'Multi-Asset Coordinated Attack', label: `Active campaign — ${maxCount} hits across ${uniqueAssets} assets`, severity: 'CRITICAL', confidence: 90, weight: 5, frequency: true, evidence: [`redisHits=${maxCount}`, `uniqueAssets=${uniqueAssets}`], category: 'frequency', source: 'redis', signal_layer: 'behavioral', mitre: 'T1078', explanation_weight: 'high', confidence_boost: 15 })
-    else if (maxCount >= 2) signals.push({ rule: 'REPEATED_INDICATOR', classification: 'Repeated Malicious Indicator', label: `Indicator seen ${maxCount}× in last 24h`, severity: 'HIGH', confidence: 75, weight: 3, frequency: true, evidence: [`redisHits=${maxCount}`], category: 'frequency', source: 'redis', signal_layer: 'behavioral', mitre: 'T1078', explanation_weight: 'medium', confidence_boost: 10 })
+    if (maxCount >= 2 && uniqueAssets >= 2) signals.push({ rule: 'CORRELATED_INDICATOR_ACTIVITY', classification: 'Multi-Asset Coordinated Attack', label: `Active campaign — ${maxCount} hits across ${uniqueAssets} assets`, severity: 'CRITICAL', confidence: 90, weight: 5, frequency: true, evidence: [`redisHits=${maxCount}`, `uniqueAssets=${uniqueAssets}`], category: 'temporal', source: 'redis', signal_layer: 'temporal', mitre: 'T1078', explanation_weight: 'high', confidence_boost: 15 })
+    else if (maxCount >= 2) signals.push({ rule: 'REPEATED_INDICATOR', classification: 'Repeated Malicious Indicator', label: `Indicator seen ${maxCount}× in last 24h`, severity: 'HIGH', confidence: 75, weight: 3, frequency: true, evidence: [`redisHits=${maxCount}`], category: 'temporal', source: 'redis', signal_layer: 'temporal', mitre: 'T1078', explanation_weight: 'medium', confidence_boost: 10 })
+  }
+
+  // Successful authentication from confirmed malicious source
+  // Fires when: auth success + src_ip confirmed malicious by current
+  // enrichment + Redis holds prior hits for this IP (count >= 2)
+  // This is a state-change temporal signal — not a frequency signal
+  const acsEventOutcome = acsObject?.acs_data?.event_outcome?.value
+  const acsSrcIp = acsObject?.acs_data?.src_ip?.value
+  const acsEventType = acsObject?.acs_data?.event_type?.value
+
+  if (acsEventType === 'auth'
+      && acsEventOutcome === 'success'
+      && acsSrcIp
+      && enrichmentJudgment?.judgment === 'CONFIRMED_MALICIOUS'
+      && checkIndependencePair(acsObject.acs_data, 'event_outcome', 'src_ip')) {
+
+    // Require prior Redis hits for this IP — confirms this is not
+    // first-time appearance but a returning confirmed-malicious source
+    const priorHits = (redisHits ?? []).find(h =>
+      h.key && (h.key.includes(`ip:${acsSrcIp}`) || h.key === `ip:${acsSrcIp}`)
+    )
+    const priorCount = priorHits?.count ?? 0
+
+    if (priorCount >= 2) {
+      signals.push({
+        rule: 'ACS_MALICIOUS_SOURCE_AUTH_SUCCESS',
+        label: 'Successful authentication from confirmed malicious source',
+        severity: 'CRITICAL',
+        confidence: 90,
+        weight: 5,
+        evidence: [
+          `event_outcome=success`,
+          `src_ip=${acsSrcIp}`,
+          `prior_hits=${priorCount}`,
+          `enrichment=CONFIRMED_MALICIOUS`,
+        ],
+        category: 'temporal',
+        signal_layer: 'temporal',
+        frequency: false,
+        mitre: 'T1078',
+        independence_pair: ['event_outcome', 'src_ip'],
+      })
+    }
   }
 
   // ── ACS BEHAVIORAL SIGNALS ────────────────────────────────────────────────
@@ -570,25 +618,24 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
       } else if (acsCount > 5) {
         signals.push({ rule: 'ACS_AUTH_FAILURE_HIGH', classification: 'Repeated Authentication Failures', label: `Repeated authentication failures (${acsCount}×) via ${acsVendor}`, severity: 'HIGH', confidence: 75, weight: 3, evidence: [`event_type=auth`, `event_outcome=failure`, `count=${acsCount}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110' })
       } else {
-        // ACS_AUTH_FAILURE_LOW fails independence gate on Windows: event_type and event_outcome
-        // both have source 'derived:event_id_table' — not independent. Windows coverage is via
-        // LOGON_FAILURE_LOW (EventID enrichment). On Linux/CloudTrail/generic the two fields
-        // come from different sources so the signal is valid.
-        if (acsVendor !== 'windows' && isValidBehavioralSignal(acs.event_type, acs.event_outcome)) {
-          signals.push({ rule: 'ACS_AUTH_FAILURE_LOW', classification: 'Authentication Failure', label: `Authentication failure via ${acsVendor}`, severity: 'LOW', confidence: 55, weight: 2, evidence: [`event_type=auth`, `event_outcome=failure`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110' })
+        // ACS_AUTH_FAILURE_LOW: event_type + event_outcome pair.
+        // Blocked on Windows — both derived:event_id_table, not independent. Windows coverage via LOGON_FAILURE_LOW.
+        if (checkIndependencePair(acs, 'event_type', 'event_outcome')) {
+          signals.push({ rule: 'ACS_AUTH_FAILURE_LOW', classification: 'Authentication Failure', label: `Authentication failure via ${acsVendor}`, severity: 'LOW', confidence: 55, weight: 2, evidence: [`event_type=auth`, `event_outcome=failure`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110', independence_pair: ['event_type', 'event_outcome'] })
         }
       }
     }
 
     // ACCOUNT DELETION — IAM/directory account removal (evidence destruction indicator)
-    if (acsv.event_type === 'privilege' && /deleteuser|deleterole|deletegroup/i.test(acsv.action ?? '')) {
-      signals.push({ rule: 'ACS_ACCOUNT_DELETION', classification: 'Account Deletion — Potential Evidence Destruction', label: `Account deletion detected: ${acsv.action} via ${acsVendor}`, severity: 'HIGH', confidence: 82, weight: 4, evidence: [`event_type=privilege`, `action=${acsv.action}`, `user=${acsv.user ?? 'unknown'}`, `target=${acsv.target_user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1070.001' })
+    // Gate: action + user independently sourced
+    if (acsv.event_type === 'privilege' && /deleteuser|deleterole|deletegroup/i.test(acsv.action ?? '') && checkIndependencePair(acs, 'action', 'user')) {
+      signals.push({ rule: 'ACS_ACCOUNT_DELETION', classification: 'Account Deletion — Potential Evidence Destruction', label: `Account deletion detected: ${acsv.action} via ${acsVendor}`, severity: 'HIGH', confidence: 82, weight: 4, evidence: [`event_type=privilege`, `action=${acsv.action}`, `user=${acsv.user ?? 'unknown'}`, `target=${acsv.target_user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1070.001', independence_pair: ['action', 'user'] })
     }
 
     // PRIVILEGE ESCALATION — sudo, role assumption, policy changes
-    // Independence gate: event_type and action must come from different sources
-    if (acsv.event_type === 'privilege' && acsv.action !== 'unknown' && isValidBehavioralSignal(acs.event_type, acs.action)) {
-      signals.push({ rule: 'ACS_PRIVILEGE_ACTION', classification: 'Privilege Escalation Detected', label: `Privilege action detected: ${acsv.action} via ${acsVendor}`, severity: 'MEDIUM', confidence: 65, weight: 3, evidence: [`event_type=privilege`, `action=${acsv.action}`, `user=${acsv.user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1078' })
+    // Gate: action + user independently sourced. On Windows: action=derived:event_id_table, user=raw:kv — independent.
+    if (acsv.event_type === 'privilege' && acsv.action !== 'unknown' && checkIndependencePair(acs, 'action', 'user')) {
+      signals.push({ rule: 'ACS_PRIVILEGE_ACTION', classification: 'Privilege Escalation Detected', label: `Privilege action detected: ${acsv.action} via ${acsVendor}`, severity: 'MEDIUM', confidence: 65, weight: 3, evidence: [`event_type=privilege`, `action=${acsv.action}`, `user=${acsv.user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1078', independence_pair: ['action', 'user'] })
     }
 
     // CREDENTIAL-SENSITIVE OBJECT ACCESS — fires without process creation context
@@ -605,26 +652,27 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
           confidence: 78,
           weight: 4,
           evidence: [`event_type=${acsv.event_type}`, `resource=${acsResource}`, `user=${acsv.user ?? 'unknown'}`],
-          category: 'behavioral',
+          category: 'enrichment',
           source: 'acs',
-          signal_layer: 'behavioral',
+          signal_layer: 'enrichment',
           mitre: 'T1003'
         })
       }
     }
 
     // LATERAL MOVEMENT CANDIDATE — successful network logon from internal source to different host
-    // Flags but does not accuse — enrichment/campaign layer escalates if warranted
+    // Gate: src_ip + user independently sourced. Semantic: src_ip value must differ from host value.
     if (
       acsv.event_type === 'auth' &&
       acsv.event_outcome === 'success' &&
       (acsv.action === 'logon' || acsv.action === 'logon_explicit') &&
       acsv.src_ip &&
-      acsv.host
+      acsv.host &&
+      acs.src_ip?.value !== acs.host?.value &&
+      checkIndependencePair(acs, 'src_ip', 'user')
     ) {
       const isInternalSrc = /^10\.|^172\.(1[6-9]|2\d|3[01])\.|^192\.168\./i.test(acsv.src_ip)
-      const srcDiffFromDest = acsv.src_ip !== acsv.host
-      if (isInternalSrc && srcDiffFromDest) {
+      if (isInternalSrc) {
         signals.push({
           rule: 'ACS_LATERAL_MOVEMENT_CANDIDATE',
           classification: 'Lateral Movement Candidate',
@@ -636,19 +684,22 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
           category: 'behavioral',
           source: 'acs',
           signal_layer: 'behavioral',
-          mitre: 'T1021'
+          mitre: 'T1021',
+          independence_pair: ['src_ip', 'user']
         })
       }
     }
 
     // SUSPICIOUS DATA ACCESS — cloud storage read on sensitive resources
+    // Gate: action + resource proxy independently sourced (resource proxy = resource_name ?? object_name ?? task_name ?? service_name)
     if (acsv.event_type === 'network' && /getobject|read|download|headobject|listobjects/i.test(acsv.action ?? '')) {
+      const acsResourceField = acs.resource_name ?? acs.object_name ?? acs.task_name ?? acs.service_name ?? { value: null, source: null }
       const resource = (acsResource ?? '').toLowerCase()
       const user = (acsv.user ?? '').toLowerCase()
       const sensitiveResource = /prod|financial|finance|secure|backup|secret|confidential|private|pii|credential|password|key/i.test(resource)
       const suspiciousUser = /contractor|temp|tmp|test|intern|vendor|external/i.test(user)
 
-      if (sensitiveResource || suspiciousUser) {
+      if ((sensitiveResource || suspiciousUser) && checkIndependencePairDirect(acs.action, acsResourceField)) {
         // Recurrence suppression — if same user seen 3+ times in session
         // without other malicious indicators, downgrade to LOW to prevent alert fatigue
         const hasOtherMalicious = signals.some(s => s.rule === 'ENRICHMENT_CONFIRMED_MALICIOUS' || s.rule === 'ENRICHMENT_SUSPICIOUS')
@@ -675,7 +726,8 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
           category: 'behavioral',
           source: 'acs',
           signal_layer: 'behavioral',
-          mitre: 'T1530'
+          mitre: 'T1530',
+          independence_pair: ['action', 'resource']
         })
       }
     }
@@ -683,19 +735,25 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
     // CLOUD SPECIFIC — IAM and data exfil patterns
     if (acsVendor === 'cloudtrail') {
       if (acsv.action?.includes('putuserpolicy') || acsv.action?.includes('attachpolicy') || acsv.action?.includes('attachuserpolicy') || acsv.action?.includes('attachrolepolicy') || acsv.action?.includes('putrolepolicy')) {
-        signals.push({ rule: 'ACS_CLOUD_PRIVILEGE_ESCALATION', classification: 'Cloud IAM Privilege Escalation', label: 'Cloud IAM privilege escalation detected', severity: 'HIGH', confidence: 85, weight: 4, evidence: [`action=${acsv.action}`, `user=${acsv.user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1098' })
+        if (acsv.event_outcome === 'success' && checkIndependencePair(acs, 'action', 'target_user')) {
+          signals.push({ rule: 'ACS_CLOUD_PRIVILEGE_ESCALATION', classification: 'Cloud IAM Privilege Escalation', label: 'Cloud IAM privilege escalation — policy attached successfully', severity: 'CRITICAL', confidence: 85, weight: 5, evidence: [`action=${acsv.action}`, `user=${acsv.user ?? 'unknown'}`, `target_user=${acsv.target_user ?? 'unknown'}`, `event_outcome=success`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1098', independence_pair: ['action', 'target_user'] })
+        } else if (acsv.event_outcome === 'failure' && checkIndependencePair(acs, 'action', 'event_outcome')) {
+          signals.push({ rule: 'ACS_CLOUD_PRIVILEGE_ESCALATION_ATTEMPT', classification: 'Cloud IAM Privilege Escalation Attempt', label: 'Cloud IAM privilege escalation attempt — policy attachment denied', severity: 'HIGH', confidence: 72, weight: 4, evidence: [`action=${acsv.action}`, `user=${acsv.user ?? 'unknown'}`, `event_outcome=failure`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1098', independence_pair: ['action', 'event_outcome'] })
+        }
       }
-      if (acsv.event_outcome === 'failure' && acsv.action?.includes('assume')) {
-        signals.push({ rule: 'ACS_CLOUD_ROLE_ASSUMPTION_FAIL', classification: 'Cloud Role Assumption Failure', label: 'Failed cloud role assumption attempt', severity: 'MEDIUM', confidence: 70, weight: 3, evidence: [`action=${acsv.action}`, `src_ip=${acsv.src_ip ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1078.004' })
+      if (acsv.event_outcome === 'failure' && acsv.action?.includes('assume') && checkIndependencePair(acs, 'action', 'src_ip')) {
+        signals.push({ rule: 'ACS_CLOUD_ROLE_ASSUMPTION_FAIL', classification: 'Cloud Role Assumption Failure', label: 'Failed cloud role assumption attempt', severity: 'MEDIUM', confidence: 70, weight: 3, evidence: [`action=${acsv.action}`, `src_ip=${acsv.src_ip ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1078.004', independence_pair: ['action', 'src_ip'] })
       }
 
       // HIGH VOLUME DATA ACCESS — repeated access to same resource within session
+      // Gate: action + resource proxy independently sourced
       if (acsv.event_type === 'network' && acsResource && acsv.user) {
+        const acsResourceField = acs.resource_name ?? acs.object_name ?? acs.task_name ?? acs.service_name ?? { value: null, source: null }
         const redisHitCount = redisHits?.filter(h =>
           h.key?.includes(`ip:${acsv.src_ip}`) || h.key?.includes(`user:${acsv.user}`)
         ).reduce((sum, h) => sum + (h.count ?? 0), 0) ?? 0
 
-        if (redisHitCount >= 3) {
+        if (redisHitCount >= 3 && checkIndependencePairDirect(acs.action, acsResourceField)) {
           signals.push({
             rule: 'ACS_HIGH_VOLUME_DATA_ACCESS',
             classification: 'High-Volume Cloud Data Access',
@@ -707,7 +765,8 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
             category: 'behavioral',
             source: 'acs',
             signal_layer: 'behavioral',
-            mitre: 'T1530'
+            mitre: 'T1530',
+            independence_pair: ['action', 'resource']
           })
         }
       }
@@ -716,21 +775,23 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
   }
 
   // COMMAND-LINE SIGNALS — lower normScore threshold: command_line extraction is independent of normalization
+  // Gate: command_line + process_name independently sourced (command_line is raw extraction, process_name from separate field)
   if (acsv && acsv.command_line && normScore >= 0.2) {
     const cmd = acsv.command_line.toLowerCase()
+    const hasCmdGate = checkIndependencePair(acs, 'command_line', 'process_name')
 
-    if (/wget|curl.*http|bash.*-c.*http|python.*urllib|nc\s+-e|ncat|mshta.*http|certutil.*http|certutil.*-urlcache|bitsadmin.*http|regsvr32.*http|rundll32.*http|wscript.*http/i.test(cmd)) {
-      signals.push({ rule: 'ACS_REMOTE_DOWNLOAD', classification: 'Remote File Download via Command Line', label: `Remote download/execution via command line (${acsVendor})`, severity: 'HIGH', confidence: 82, weight: 4, evidence: [`command_line=${acsv.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1105' })
+    if (hasCmdGate && /wget|curl.*http|bash.*-c.*http|python.*urllib|nc\s+-e|ncat|mshta.*http|certutil.*http|certutil.*-urlcache|bitsadmin.*http|regsvr32.*http|rundll32.*http|wscript.*http/i.test(cmd)) {
+      signals.push({ rule: 'ACS_REMOTE_DOWNLOAD', classification: 'Remote File Download via Command Line', label: `Remote download/execution via command line (${acsVendor})`, severity: 'HIGH', confidence: 82, weight: 4, evidence: [`command_line=${acsv.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1105', independence_pair: ['command_line', 'process_name'] })
     }
 
-    if (/base64.*decode|echo.*\|.*base64|openssl.*base64|base64\s+-d/i.test(cmd)) {
-      signals.push({ rule: 'ACS_BASE64_EXECUTION', classification: 'Obfuscated Command Execution', label: `Base64-encoded command execution (${acsVendor})`, severity: 'HIGH', confidence: 80, weight: 4, evidence: [`command_line=${acsv.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1027' })
+    if (hasCmdGate && /base64.*decode|echo.*\|.*base64|openssl.*base64|base64\s+-d/i.test(cmd)) {
+      signals.push({ rule: 'ACS_BASE64_EXECUTION', classification: 'Obfuscated Command Execution', label: `Base64-encoded command execution (${acsVendor})`, severity: 'HIGH', confidence: 80, weight: 4, evidence: [`command_line=${acsv.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1027', independence_pair: ['command_line', 'process_name'] })
     }
 
     const isSudoContext = acsVendor === 'linux' && (acsv.action === 'privilege_escalation' || acsv.action === 'command_executed')
     const shellBinary = /\/(bash|sh|python|perl|ruby|php|nc|ncat)\s*$|sudo\s+(bash|sh|python|perl|ruby|php|nc|ncat)/i.test(cmd)
-    if (isSudoContext && shellBinary) {
-      signals.push({ rule: 'ACS_SUDO_SHELL', classification: 'Privilege Abuse via Sudo Shell', label: `Sudo to interactive shell (${acsVendor})`, severity: 'CRITICAL', confidence: 90, weight: 4, evidence: [`command_line=${acsv.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1548.003' })
+    if (isSudoContext && shellBinary && hasCmdGate) {
+      signals.push({ rule: 'ACS_SUDO_SHELL', classification: 'Privilege Abuse via Sudo Shell', label: `Sudo to interactive shell (${acsVendor})`, severity: 'CRITICAL', confidence: 90, weight: 4, evidence: [`command_line=${acsv.command_line.slice(0, 80)}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1548.003', independence_pair: ['command_line', 'process_name'] })
     }
   }
 
@@ -738,7 +799,7 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
   // Suppressed when a strong behavioral signal (weight >= 3) already exists — avoid noise
   const hasStrongBehavioralSignal = signals.some(s => s.signal_layer === 'behavioral' && (s.weight ?? 0) >= 3)
   if (acsObject?.meta?.is_generic && normScore < 0.5 && !hasStrongBehavioralSignal) {
-    signals.push({ rule: 'ACS_PARTIAL_DETECTION', classification: 'Partial Detection — Unknown Log Format', label: 'Partial normalization — limited behavioral detection', severity: 'LOW', confidence: 30, weight: 1, evidence: [`normalization_score=${normScore}`, `vendor=unknown`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: null })
+    signals.push({ rule: 'ACS_PARTIAL_DETECTION', classification: 'Partial Detection — Unknown Log Format', label: 'Partial normalization — limited behavioral detection', severity: 'LOW', confidence: 30, weight: 1, evidence: [`normalization_score=${normScore}`, `vendor=unknown`], category: 'enrichment', source: 'acs', signal_layer: 'enrichment', mitre: null })
   }
 
   return signals
@@ -771,6 +832,50 @@ function getMitreTactic(mitreId) {
   return map[mitreId] ?? map[base] ?? null
 }
 
+function computeQualityFactor(normalizationScore, parseQuality, signals) {
+  const hasSignalDivergence = (() => {
+    const tacticGroups = signals.filter(s => s.mitre).map(s => {
+      const t = s.mitre?.split('.')?.[0]
+      const tacticMap = {
+        'T1110': 'CredentialAccess', 'T1003': 'CredentialAccess',
+        'T1059': 'Execution', 'T1204': 'Execution', 'T1569': 'Execution',
+        'T1053': 'Persistence', 'T1543': 'Persistence', 'T1136': 'Persistence', 'T1098': 'Persistence',
+        'T1055': 'DefenseEvasion', 'T1070': 'DefenseEvasion', 'T1218': 'DefenseEvasion', 'T1027': 'DefenseEvasion',
+        'T1105': 'CommandControl',
+        'T1021': 'LateralMovement',
+        'T1548': 'PrivilegeEscalation', 'T1134': 'PrivilegeEscalation', 'T1078': 'PrivilegeEscalation',
+        'T1087': 'Discovery',
+        'T1566': 'InitialAccess',
+      }
+      return tacticMap[t] ?? null
+    }).filter(Boolean)
+    return new Set(tacticGroups).size >= 3
+  })()
+  if (normalizationScore >= 0.85 && parseQuality === 'structured' && !hasSignalDivergence) return 'HIGH'
+  if (normalizationScore >= 0.60 || (parseQuality === 'structured' && normalizationScore >= 0.45)) return 'MEDIUM'
+  if (normalizationScore < 0.30 || parseQuality === 'unknown') return 'UNKNOWN'
+  return 'LOW'
+}
+
+function normalizeFinalVerdict(v) {
+  if (!v) v = {}
+  return {
+    ...v,
+    verdictClass:            v.verdictClass            ?? 'NO_DETECTION',
+    verdictReliabilityClass: v.verdictReliabilityClass ?? 'TRACE_REQUIRED',
+    severity:                v.severity                ?? 'LOW',
+    classification:          v.classification          ?? 'UNKNOWN',
+    confidence:              typeof v.confidence === 'number' ? v.confidence : 0,
+    behavioral_confidence:   typeof v.behavioral_confidence === 'number' ? v.behavioral_confidence : 0,
+    quality_factor:          v.quality_factor          ?? 'UNKNOWN',
+    asset_is_critical:       v.asset_is_critical       ?? false,
+    evidence:                Array.isArray(v.evidence)       ? v.evidence       : [],
+    decision_trace:          Array.isArray(v.decision_trace) ? v.decision_trace : [],
+    signals:                 Array.isArray(v.signals)        ? v.signals        : [],
+    deterministicMitre:      v.deterministicMitre      ?? null,
+  }
+}
+
 function aggregateSignals(signals, parseQuality = 'structured', normalizationScore = 0) {
   if (!signals.length) return { severity: 'LOW', classification: 'UNKNOWN', confidence: 20, asset_is_critical: false, evidence: [], decision_trace: ['No rules matched — defaulting to LOW/UNKNOWN'] }
 
@@ -778,10 +883,12 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
   const severityByRank = { 4: 'CRITICAL', 3: 'HIGH', 2: 'MEDIUM', 1: 'LOW' }
 
   // ── Layer separation ────────────────────────────────────────────────────────
-  const isBehavioral  = s => s.signal_layer === 'behavioral' || (!s.signal_layer && (s.category === 'behavioral' || s.category === 'asset' || s.category === 'frequency'))
+  const isBehavioral  = s => s.signal_layer === 'behavioral' || (!s.signal_layer && (s.category === 'behavioral' || s.category === 'asset'))
   const isEnrichment  = s => s.signal_layer === 'enrichment'  || (!s.signal_layer && s.category === 'enrichment')
+  const isTemporal    = s => s.signal_layer === 'temporal' || s.frequency === true || s.category === 'frequency'
   const behavioralSignals = signals.filter(isBehavioral)
   const enrichmentSignals = signals.filter(isEnrichment)
+  const temporalSignals   = signals.filter(isTemporal)
 
   const sortLayer = arr => [...arr].sort((a, b) => {
     const wDiff = b.weight - a.weight
@@ -790,6 +897,7 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
   })
   const sortedBehavioral = sortLayer(behavioralSignals)
   const sortedEnrichment = sortLayer(enrichmentSignals)
+  const sortedTemporal   = sortLayer(temporalSignals)
 
   const hasBehavioral = sortedBehavioral.length > 0
 
@@ -797,9 +905,7 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
   // should not occupy the dominant slot — the dominant slot drives classification label.
   // Frequency signals (category === 'frequency', frequency: true) must never occupy the
   // dominant slot — dominant drives classification label and is shown in the decision trace.
-  const nonFrequencyBehavioral = sortedBehavioral.filter(s =>
-    !s.frequency && s.signal_layer !== 'frequency' && s.category !== 'frequency'
-  )
+  const nonFrequencyBehavioral = sortedBehavioral.filter(s => !isTemporal(s))
   // Exclude asset signals from dominant — they amplify context, they do not detect behavior
   const behavioralNonFrequency = nonFrequencyBehavioral.filter(s =>
     (s.signal_layer === 'behavioral' || s.signal_layer === 'enrichment')
@@ -822,9 +928,17 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
   // 3. EventID detection signals (domain-specific but genuine detection)
   // 4. Any enrichment signal (contextual — ASSET_CRITICAL is last resort)
   // 5. null → NO_DETECTION / ENRICHMENT_ONLY_VERDICT
+  // Non-frequency temporal signals (state-change, not recurrence)
+  // are eligible for dominance when no behavioral or detection
+  // enrichment signals exist. Frequency/recurrence temporal signals
+  // (CORRELATED_INDICATOR_ACTIVITY, REPEATED_INDICATOR) remain
+  // excluded from dominance.
+  const nonFrequencyTemporal = sortedTemporal.filter(s => !s.frequency)
+
   const dominant = behavioralNonFrequency[0]
     ?? nonFrequencyBehavioral[0]
     ?? detectionEnrichment[0]
+    ?? nonFrequencyTemporal[0]
     ?? sortedEnrichment[0]
     ?? null
 
@@ -843,9 +957,48 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
   // Severity floor: confirmed malicious IP always elevates to minimum HIGH
   const hasConfirmedMalicious = signals.some(s => s.rule === 'ENRICHMENT_CONFIRMED_MALICIOUS')
   const flooredSeverityRank = hasConfirmedMalicious ? Math.max(finalSeverityRank, 3) : finalSeverityRank
-  const finalSeverity = severityByRank[flooredSeverityRank] ?? 'LOW'
+  let finalSeverity = severityByRank[flooredSeverityRank] ?? 'LOW'
+  let finalSeverityRankMutable = flooredSeverityRank
   const severityWasFloored = hasConfirmedMalicious && flooredSeverityRank > finalSeverityRank
   const assetIsCritical = signals.some(s => s.category === 'asset' && ['CRITICAL','HIGH'].includes(s.severity))
+
+  // ── Temporal severity floor ────────────────────────────────────────────────
+  // Temporal signals (recurrence, cross-asset correlation) provide a minimum
+  // severity floor. They do not define base severity (that belongs to behavioral
+  // signals) but raise the floor when pattern recurrence or breadth warrants it.
+  const hasCampaignTemporal = sortedTemporal.some(s => s.rule === 'CORRELATED_INDICATOR_ACTIVITY')
+  const hasRepeatedTemporal = sortedTemporal.some(s => s.rule === 'REPEATED_INDICATOR')
+  let temporalFloorEntry = null
+
+  if (hasCampaignTemporal && finalSeverityRankMutable < (severityRank['HIGH'] ?? 3)) {
+    const prevSeverity = finalSeverity
+    finalSeverity = 'HIGH'
+    finalSeverityRankMutable = severityRank['HIGH'] ?? 3
+    temporalFloorEntry = { type: 'floor', label: 'Severity elevated to HIGH minimum — correlated indicator activity across multiple assets', rule: 'CORRELATED_INDICATOR_ACTIVITY', from: prevSeverity, to: 'HIGH' }
+  } else if (hasRepeatedTemporal && finalSeverityRankMutable < (severityRank['MEDIUM'] ?? 2)) {
+    const prevSeverity = finalSeverity
+    finalSeverity = 'MEDIUM'
+    finalSeverityRankMutable = severityRank['MEDIUM'] ?? 2
+    temporalFloorEntry = { type: 'floor', label: 'Severity elevated to MEDIUM minimum — repeated indicator in session', rule: 'REPEATED_INDICATOR', from: prevSeverity, to: 'MEDIUM' }
+  }
+
+  // State-change temporal signals at CRITICAL can set CRITICAL floor
+  const hasCriticalTemporalSignal = sortedTemporal.some(
+    s => !s.frequency && s.severity === 'CRITICAL'
+  )
+
+  if (hasCriticalTemporalSignal && finalSeverityRankMutable < (severityRank['CRITICAL'] ?? 4)) {
+    const prevSeverity = finalSeverity
+    finalSeverity = 'CRITICAL'
+    finalSeverityRankMutable = severityRank['CRITICAL'] ?? 4
+    temporalFloorEntry = {
+      type: 'floor',
+      label: 'Severity elevated to CRITICAL — state-change temporal signal present',
+      rule: sortedTemporal.find(s => !s.frequency && s.severity === 'CRITICAL')?.rule,
+      from: prevSeverity,
+      to: 'CRITICAL',
+    }
+  }
 
   const classificationMap = {
     BRUTE_FORCE_EXTREME: 'Brute Force Attack', BRUTE_FORCE_HIGH: 'Brute Force Attack',
@@ -877,14 +1030,16 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
     ACS_REMOTE_DOWNLOAD:               'Remote File Download via Command Line',
     ACS_BASE64_EXECUTION:              'Obfuscated Command Execution',
     ACS_SUDO_SHELL:                    'Privilege Abuse via Sudo Shell',
-    ACS_CLOUD_PRIVILEGE_ESCALATION:    'Cloud IAM Privilege Escalation',
-    ACS_CLOUD_ROLE_ASSUMPTION_FAIL:    'Cloud Role Assumption Failure',
+    ACS_CLOUD_PRIVILEGE_ESCALATION:         'Cloud IAM Privilege Escalation',
+    ACS_CLOUD_PRIVILEGE_ESCALATION_ATTEMPT: 'Cloud IAM Privilege Escalation Attempt',
+    ACS_CLOUD_ROLE_ASSUMPTION_FAIL:         'Cloud Role Assumption Failure',
     ACS_SUSPICIOUS_DATA_ACCESS:        'Suspicious Cloud Data Access',
     ACS_OBJECT_ACCESS_SENSITIVE:       'Credential Resource Access',
     ACS_LATERAL_MOVEMENT_CANDIDATE:   'Lateral Movement Candidate',
     ACS_HIGH_VOLUME_DATA_ACCESS:       'High-Volume Cloud Data Access',
     ACS_ACCOUNT_DELETION:              'Account Deletion — Potential Evidence Destruction',
     ACS_PARTIAL_DETECTION:             'Partial Detection — Unknown Log Format',
+    ACS_MALICIOUS_SOURCE_AUTH_SUCCESS: 'Successful Authentication from Malicious Source',
   }
 
   // Classification comes ONLY from behavioral signals — frequency signals cannot drive classification.
@@ -905,13 +1060,21 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
     s.rule !== 'ENRICHMENT_CLEAN'
   )
 
+  // Non-frequency temporal signals with classificationMap entries are eligible as
+  // classification sources — they represent genuine state-change detections.
+  // Priority: behavioral > temporal > enrichment > dominant.
+  const temporalClassificationSource = sortedTemporal
+    .filter(s => !s.frequency && classificationMap[s.rule])
+    .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))[0] ?? null
+
   const classificationSource = (eventBehavioralIsGeneric && specificEnrichment)
     ? specificEnrichment
-    : eventBehavioral ?? topEnrichment ?? dominant
+    : eventBehavioral ?? temporalClassificationSource ?? topEnrichment ?? dominant
 
   const classificationReason = (eventBehavioralIsGeneric && specificEnrichment)
     ? 'enrichment_specific'
     : eventBehavioral ? 'event_behavioral'
+    : temporalClassificationSource ? 'temporal'
     : topEnrichment ? 'enrichment'
     : 'dominant'
 
@@ -923,23 +1086,37 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
   const deterministicMitre = (!classificationIsGeneric ? classificationSource?.mitre : null)
     ?? specificEnrichmentMitre
     ?? sortedBehavioral.find(s => s.mitre)?.mitre
+    ?? sortedTemporal.filter(s => !s.frequency).find(s => s.mitre)?.mitre
     ?? sortedEnrichment.find(s => s.mitre)?.mitre
     ?? null
 
-  // ── Confidence: behavioral base + capped enrichment boost ─────────────────
-  const top3 = (sortedBehavioral.length > 0 ? sortedBehavioral : sortedEnrichment).slice(0, 3)
-  const baseConfidence = top3.reduce((sum, s) => sum + s.confidence * s.weight, 0) / Math.max(top3.reduce((sum, s) => sum + s.weight, 0), 1)
-  const eventidBoost   = Math.min(enrichmentSignals.reduce((max, s) => Math.max(max, s.confidence_boost ?? 0), 0), 15)
-  const campaignBonus  = signals.some(s => s.rule === 'CORRELATED_INDICATOR_ACTIVITY') ? 10 : 0
-  const unknownPenalty = classification === 'UNKNOWN' ? -20 : 0
-  const parseBonus     = parseQuality === 'structured' ? 10 : parseQuality === 'partial' ? 0 : -10
-  const finalConfidence = Math.round(Math.max(0, Math.min(100, baseConfidence + parseBonus + campaignBonus + unknownPenalty + eventidBoost)))
+  // ── Model E: behavioral_confidence ────────────────────────────────────────
+  const dominantConf = dominant?.confidence ?? 0
+  const behavioralSupporters = sortedBehavioral.slice(1).filter(s =>
+    !isTemporal(s) && s.category !== 'asset'
+    && (s.signal_layer === 'behavioral' || s.category === 'behavioral'))
+  const supportingContrib = behavioralSupporters
+    .reduce((acc, s, i) => acc + (s.confidence * (0.25 / (i + 2))), 0)
+  const temporalBoost = sortedTemporal.length > 0
+    ? Math.min(10, sortedTemporal[0].confidence * 0.12) : 0
+  const hasEnrichmentAlignment = signals.some(s =>
+    s.rule === 'ENRICHMENT_CONFIRMED_MALICIOUS' || s.rule === 'ENRICHMENT_SUSPICIOUS')
+    && (dominant?.severity === 'CRITICAL' || dominant?.severity === 'HIGH')
+  const enrichmentAlignment = hasEnrichmentAlignment ? 5 : 0
+  const behavioral_confidence = Math.round(Math.min(100,
+    dominantConf + supportingContrib + temporalBoost + enrichmentAlignment))
+
+  const quality_factor = computeQualityFactor(normalizationScore, parseQuality, signals)
+
+  // Legacy confidence — kept for narrator prompt compatibility
+  const finalConfidence = behavioral_confidence
 
   // ── Layer summary ──────────────────────────────────────────────────────────
   const layer_summary = {
     behavioral:      sortedBehavioral.length,
     enrichment:      enrichmentSignals.length,
-    dominant_layer:  hasBehavioral ? 'behavioral' : 'enrichment',
+    temporal:        sortedTemporal.length,
+    dominant_layer:  dominant?.signal_layer ?? (hasBehavioral ? 'behavioral' : 'enrichment'),
     severity_boosted: finalSeverityRank > baseSeverityRank,
   }
 
@@ -949,29 +1126,43 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
     ...(severityWasFloored ? [{ type: 'floor', label: `Severity elevated to HIGH minimum — confirmed malicious IP present`, rule: 'ENRICHMENT_CONFIRMED_MALICIOUS', from: severityByRank[finalSeverityRank], to: finalSeverity }] : []),
     { type: 'classification', label: classification, rule: classificationSource?.rule, layer: classificationSource?.signal_layer, reason: classificationReason },
     { type: 'asset',         label: `Critical: ${assetIsCritical}`, value: assetIsCritical },
-    { type: 'confidence',    label: `${finalConfidence}`, base: Math.round(baseConfidence), campaignBonus, unknownPenalty, parseBonus, eventidBoost },
-    { type: 'layer_summary', label: `behavioral=${layer_summary.behavioral} enrichment=${layer_summary.enrichment} dominant=${layer_summary.dominant_layer}${layer_summary.severity_boosted ? ' [severity boosted]' : ''}`, ...layer_summary },
+    ...(temporalFloorEntry ? [temporalFloorEntry] : []),
+    { type: 'confidence',    label: `${behavioral_confidence}`, dominantConf, supportingContrib: Math.round(supportingContrib), temporalBoost: Math.round(temporalBoost), enrichmentAlignment, quality_factor },
+    { type: 'layer_summary', label: `behavioral=${layer_summary.behavioral} enrichment=${layer_summary.enrichment} temporal=${layer_summary.temporal} dominant=${layer_summary.dominant_layer}${layer_summary.severity_boosted ? ' [severity boosted]' : ''}`, ...layer_summary },
     ...[...sortedBehavioral.slice(1), ...sortedEnrichment].map(s => ({ type: 'supporting', label: s.label, severity: s.severity, category: s.category, rule: s.rule, signal_layer: s.signal_layer }))
   ]
 
   // ── Verdict reliability classification ──────────────────────────────────────
   const hasBehavioralForVerdict = signals.some(s =>
-    s.signal_layer === 'behavioral' && !s.frequency && s.category !== 'frequency')
+    s.signal_layer === 'behavioral' && !isTemporal(s))
 
   const hasDetectionEnrichment = signals.some(s =>
     s.signal_layer === 'enrichment' && s.category === 'behavioral')
 
+  const hasNonFrequencyTemporal = (sortedTemporal ?? []).some(
+    s => !s.frequency && s.category !== 'frequency'
+  )
+
   const verdictClass = (() => {
-    if (!hasBehavioralForVerdict && !hasDetectionEnrichment) return 'NO_DETECTION'
-    if (!hasBehavioralForVerdict && hasDetectionEnrichment) return 'ENRICHMENT_ONLY_VERDICT'
-    if (normalizationScore < 0.3 || (dominant?.weight ?? 0) < 2) return 'LOW_CONFIDENCE_VERDICT'
+    if (!hasBehavioralForVerdict && !hasDetectionEnrichment && !hasNonFrequencyTemporal)
+      return 'NO_DETECTION'
+    if (!hasBehavioralForVerdict && !hasDetectionEnrichment && hasNonFrequencyTemporal)
+      return 'DEFENSIBLE_VERDICT'
+    if (!hasBehavioralForVerdict && hasDetectionEnrichment)
+      return 'ENRICHMENT_ONLY_VERDICT'
+    if (normalizationScore < 0.3 || (dominant?.weight ?? 0) < 2)
+      return 'LOW_CONFIDENCE_VERDICT'
     return 'DEFENSIBLE_VERDICT'
   })()
 
   // ENRICHMENT_ONLY_VERDICT is always TRACE_REQUIRED — never surface safe
-  // without vendor-agnostic behavioral evidence
+  // without vendor-agnostic behavioral evidence.
+  // Temporal-only verdicts always require trace validation — session context
+  // must be understood before acting on a temporal-only classification.
   const verdictReliabilityClass = (() => {
     if (verdictClass !== 'DEFENSIBLE_VERDICT') return 'TRACE_REQUIRED'
+    if (!hasBehavioralForVerdict && !hasDetectionEnrichment && hasNonFrequencyTemporal)
+      return 'TRACE_REQUIRED'
     const dominantWeight = dominant?.weight ?? 0
     const hasSignalContradiction = (() => {
       const tactics = [...new Set(signals
@@ -988,7 +1179,9 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
   return {
     severity:                  finalSeverity,
     classification,
-    confidence:                finalConfidence,
+    confidence:                behavioral_confidence,
+    behavioral_confidence,
+    quality_factor,
     asset_is_critical:         assetIsCritical,
     affected_asset:            null,
     evidence:                  [...new Set((signals ?? []).flatMap(s => s.evidence ?? []))].slice(0, 8),
@@ -1029,6 +1222,11 @@ const RECOMMENDATION_LOOKUP = {
     "Verify whether the policy attachment was authorized and matches expected IAM activity",
     "Check the current effective permissions of the target account after the action",
     "Correlate with other IAM changes in the same time window",
+  ],
+  ACS_CLOUD_PRIVILEGE_ESCALATION_ATTEMPT: [
+    "Verify whether the blocked policy attachment represents a persistent adversary probing IAM permissions",
+    "Check whether other IAM operations were attempted from the same source before or after this event",
+    "Correlate the source IP with other AWS API activity in the session to assess scope of probing",
   ],
   ACS_CLOUD_ROLE_ASSUMPTION_FAIL: [
     "Verify whether the role assumption attempt was expected for this identity",
@@ -1075,6 +1273,11 @@ const RECOMMENDATION_LOOKUP = {
   ACS_PARTIAL_DETECTION: [
     "Verify whether a more specific parser applies to this log format",
     "Correlate any extracted indicators with other session activity before drawing conclusions",
+  ],
+  ACS_MALICIOUS_SOURCE_AUTH_SUCCESS: [
+    "Verify whether the successful authentication represents a legitimate access or a compromised credential",
+    "Check all actions taken by this identity after the successful authentication in this session",
+    "Correlate this authentication with the prior failure sequence from the same source to assess attack progression",
   ],
   BRUTE_FORCE_EXTREME: [
     "Verify whether any authentication succeeded following the brute force sequence",
@@ -1189,6 +1392,8 @@ function buildDeterministicRecommendations(signals, affectedAsset, acsObject) {
       // EventID-based detection signals (signal_layer=enrichment, category=behavioral)
       // are included so they can generate recommendations in ENRICHMENT_ONLY_VERDICT
       if (s.signal_layer === 'enrichment' && s.category === 'behavioral') return true
+      // Non-frequency temporal signals with lookup entries contribute
+      if (s.signal_layer === 'temporal' && !s.frequency && RECOMMENDATION_LOOKUP[s.rule]) return true
       return false
     })
     .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
@@ -1216,23 +1421,23 @@ function buildDeterministicRecommendations(signals, affectedAsset, acsObject) {
 }
 
 function buildNarratorPrompt(sanitizedAlert, parsedContext, enrichmentJudgment, redisContext, isActiveCampaign, uniqueAssetCount, frequencyMultiplier, finalVerdict, acsObject = null) {
-  return `You are ARBITER's Narrator Layer. A deterministic engine has already produced the final verdict below.
+  return `You are ARBITER's Narrator Layer. A deterministic engine has already classified this alert — your role is synthesis only.
 
 YOUR ROLE IS STRICTLY LIMITED TO:
-1. Mapping the behavior to a specific MITRE ATT&CK technique and subtechnique
-2. Writing a 4-sentence reasoning explanation
-3. Populating the indicators field with technical facts
+1. Writing one synthesis paragraph explaining the behavior and its significance
+2. Identifying the MITRE ATT&CK tactic and tactic name
+3. Populating the indicators field with technical facts extracted from the alert
 
-RECOMMENDATIONS ARE GENERATED DETERMINISTICALLY — DO NOT INCLUDE THEM IN YOUR RESPONSE.
-
-YOU MUST NOT override: severity (${finalVerdict.severity}), classification (${finalVerdict.classification}), confidence (${finalVerdict.confidence}), asset_is_critical (${finalVerdict.asset_is_critical})
+YOU MUST NOT produce: recommendations, mitre_id, mitre_name, severity overrides, or confidence overrides.
 
 ═══ FINAL VERDICT (DETERMINISTIC — DO NOT OVERRIDE) ═══
 severity: ${finalVerdict.severity}
 classification: ${finalVerdict.classification}
-confidence: ${finalVerdict.confidence}
+behavioral_confidence: ${finalVerdict.behavioral_confidence}
+quality_factor: ${finalVerdict.quality_factor}
+verdict_class: ${finalVerdict.verdictClass}
 asset_is_critical: ${finalVerdict.asset_is_critical}
-decision_trace: ${finalVerdict.decision_trace.slice(0,3).join(' | ')}
+decision_trace: ${finalVerdict.decision_trace.slice(0,3).map(d => typeof d === 'object' ? d.label : d).join(' | ')}
 
 ═══ STRUCTURED ALERT DATA ═══
 ALERT TYPE: ${parsedContext.alertType ?? 'Unknown'}
@@ -1247,74 +1452,21 @@ ${parsedContext.fields || 'No structured fields extracted'}
 ENRICHMENT JUDGMENT:
 ${enrichmentJudgment.summary}
 VERDICT: ${enrichmentJudgment.judgment}
-blockRecommendationAllowed: ${enrichmentJudgment.blockRecommendationAllowed}
 
 ${redisContext ? `TEMPORAL CORRELATION:\n${redisContext}\n${isActiveCampaign ? `ACTIVE CAMPAIGN: ${frequencyMultiplier} hits across ${uniqueAssetCount} unique assets.` : ''}` : ''}
 
 Return ONLY a JSON object. No markdown, no backticks, no preamble:
 {
-  "indicators": string[] (3-8 technical facts from the alert — list EventCodes, binary names, arguments, asset names, timestamps),
-  "tactic": string (MITRE tactic — must match mitre_tactic exactly),
-  "mitre_id": string (MUST be a real existing MITRE ATT&CK subtechnique ID — examples: T1053.005 for scheduled tasks, T1059.001 for PowerShell, T1110.001 for brute force, T1021.002 for SMB lateral movement, T1566.001 for spearphishing attachment, T1078 for valid accounts, T1070.001 for log clearing, T1003.001 for lsass dump),
-  "mitre_name": string (official MITRE name for the mitre_id),
+  "indicators": string[] (3-8 technical facts from the alert — EventCodes, binary names, arguments, asset names, timestamps),
+  "tactic": string (MITRE tactic name — e.g. "Credential Access", "Defense Evasion", "Execution"),
   "mitre_tactic": string (must match tactic exactly),
-  "reasoning": string (exactly 4 sentences as a plain string — not an object, not an array: sentence 1=what technique/binary/event, sentence 2=enrichment or behavioral driver, sentence 3=which rule triggered severity, sentence 4=most urgent action with specific asset/account)
+  "reasoning": string (one synthesis paragraph as a plain string — synthesize what the behavioral signals mean together, what the enrichment context adds, and the overall risk picture for this alert)
 }
 
-CRITICAL RULES — VIOLATIONS WILL BE CORRECTED BY THE DETERMINISTIC ENGINE:
-
-PLATFORM CONSTRAINT (ABSOLUTE — NO EXCEPTIONS):
-${(() => {
-  const v = acsObject?.meta?.vendor_origin
-  if (v === 'linux') return `This is a LINUX system. You MUST use ONLY Linux commands in recommendations:
-  - journalctl -u sshd, grep, awk, sed, tail
-  - systemctl stop/status, ss -tulpn, who, last, w
-  - ausearch -m USER_LOGIN, aureport
-  - /var/log/auth.log, /var/log/syslog
-  FORBIDDEN: Get-WinEvent, schtasks, net user, PowerShell, wmic, reg query, sc stop`
-  if (v === 'cloudtrail') return `This is AWS CloudTrail. You MUST use ONLY AWS CLI commands in recommendations:
-  - aws cloudtrail lookup-events
-  - aws iam get-user, aws iam list-attached-user-policies
-  - aws iam delete-user-policy, aws iam detach-user-policy
-  - aws s3 ls, aws s3api get-bucket-policy
-  - aws ec2 describe-instances, aws ec2 stop-instances
-  FORBIDDEN: Get-WinEvent, schtasks, net user, PowerShell, journalctl, systemctl`
-  if (v === 'windows') return `This is a WINDOWS system. You MUST use ONLY Windows commands in recommendations:
-  - Get-WinEvent, PowerShell, wmic, reg query
-  - net user, net localgroup, sc stop, schtasks
-  - Invoke-Command, Get-Process, Get-Service
-  FORBIDDEN: journalctl, systemctl, aws cli, kubectl`
-  const behavioralSignals = (finalVerdict.signals ?? [])
-    .filter(s => s.signal_layer === 'behavioral' && s.weight >= 3 && s.rule !== 'ACS_PARTIAL_DETECTION' && s.rule !== 'CORRELATED_INDICATOR_ACTIVITY')
-    .slice(0, 3)
-
-  const signalContext = behavioralSignals.length > 0
-    ? `CONFIRMED ATTACK BEHAVIORS — EACH RECOMMENDATION MUST ADDRESS ONE OF THESE:
-${behavioralSignals.map(s => `- [${s.rule}] ${s.label} → MITRE ${s.mitre ?? 'unknown'}`).join('\n')}
-
-REQUIRED recommendation structure when behaviors detected:
-01: CONTAIN the specific behavior listed above (block the command, terminate the process, isolate the source)
-02: INVESTIGATE the specific technique (search logs for the exact pattern that triggered the signal)
-03: VALIDATE scope (determine what else this technique may have affected)
-04: HARDEN against recurrence (remove persistence, block execution path)
-05: PRESERVE evidence specific to the detected technique\n`
-    : ''
-
-  return `UNKNOWN/GENERIC LOG SOURCE.
-${signalContext}ALL 5 recommendations MUST be platform-agnostic investigation steps:
-- Network-level: block or monitor the source IP at the firewall
-- Identity: verify and disable any mentioned user accounts through your IAM system
-- Evidence: preserve raw log files before any remediation
-- Escalation: forward indicators to threat intelligence platform
-- Containment: isolate the affected host at the network level if a hostname was identified
-STRICTLY FORBIDDEN: Get-WinEvent, schtasks, net user, PowerShell, journalctl, systemctl, aws, kubectl, any platform-specific command
-Use generic verbs: Isolate, Block, Verify, Preserve, Escalate, Investigate
-When CONFIRMED ATTACK BEHAVIORS are listed above, ALL 5 recommendations MUST follow the required structure above and directly address those specific behaviors.`
-})()}
-
+RULES:
 - reasoning MUST be a plain string — never an object or array
-- mitre_id MUST be a real MITRE ATT&CK subtechnique ID
-- DO NOT include recommendations or recommendation_provenance in your response — they are generated by the deterministic engine`
+- DO NOT include mitre_id, mitre_name, recommendations, or recommendation_provenance
+- reasoning synthesizes the full picture — do not repeat the classification verbatim`
 }
 
 // ── IP ENRICHMENT ─────────────────────────────────────────────────────────────
@@ -1809,7 +1961,6 @@ export async function POST(request) {
 
         if (!alertText?.trim() || alertText.trim().length < 10) {
           send(controller, 'error', { message: 'Alert text is too short.' })
-          controller.close()
           return
         }
 
@@ -1850,8 +2001,13 @@ export async function POST(request) {
 
         const enrichment = {}
         if (ips.length > 0) {
-          const enrichResults = await Promise.all(ips.map(ip => enrichIP(ip)))
-          ips.forEach((ip, i) => { enrichment[ip] = enrichResults[i] })
+          try {
+            const enrichResults = await Promise.all(ips.map(ip => enrichIP(ip)))
+            ips.forEach((ip, i) => { enrichment[ip] = enrichResults[i] })
+          } catch (enrichErr) {
+            console.error('[ARBITER] Enrichment failed, continuing without:', enrichErr.message)
+            // enrichment remains empty — enrichmentJudgment will show no verdict
+          }
         }
 
         // Stream enrichment immediately
@@ -1871,7 +2027,13 @@ export async function POST(request) {
         const correlationUsername = normalizeUsernameForCorrelation(acsObject?.acs_data?.user?.value ?? parsedAlert.username)
 
 
-        const redisContextResult = await getRedisContext(ips, correlationUsername, safeSessionId)
+        let redisContextResult = null
+        try {
+          redisContextResult = await getRedisContext(ips, correlationUsername, safeSessionId)
+        } catch (redisErr) {
+          console.error('[ARBITER] Redis read failed, continuing without correlation:', redisErr.message)
+          // redisContextResult remains null — no correlation signals will fire
+        }
         const redisHits    = redisContextResult?.hits ?? null
         const redisPatterns = redisContextResult?.patterns ?? []
         const redisContext = buildRedisContextSummary(redisHits)
@@ -1918,10 +2080,12 @@ export async function POST(request) {
         const signals      = getSignals(parsedAlert, enrichmentJudgment, redisHits, acsObject)
         let finalVerdict
         try {
-          finalVerdict = aggregateSignals(signals, parsedAlert.parseQuality, acsObject?.meta?.normalization_score ?? 0)
+          finalVerdict = normalizeFinalVerdict(
+            aggregateSignals(signals, parsedAlert.parseQuality,
+              acsObject?.meta?.normalization_score ?? 0)
+          )
         } catch (engineErr) {
-          console.error('[ARBITER] Decision engine error:', engineErr)
-          finalVerdict = {
+          finalVerdict = normalizeFinalVerdict({
             severity: 'UNKNOWN',
             classification: 'UNKNOWN',
             confidence: 0,
@@ -1931,215 +2095,82 @@ export async function POST(request) {
             decision_trace: [{ type: 'error', label: 'Decision engine failed — manual review required' }],
             signals: [],
             deterministicMitre: null,
-            verdictClass: 'NO_DETECTION',
-            verdictReliabilityClass: 'TRACE_REQUIRED',
-          }
+          })
         }
         const isActiveCampaign = (finalVerdict?.signals ?? signals).some(
           s => s.rule === 'CORRELATED_INDICATOR_ACTIVITY'
         )
-
-        if (parsedAlert.parseQuality === 'partial') {
-          finalVerdict.confidence = Math.max(0, finalVerdict.confidence - 25)
-          finalVerdict.decision_trace.push({ type: 'penalty', label: 'Parse quality PARTIAL — confidence reduced by 25', value: -25 })
-        }
-        const normScore = acsObject?.meta?.normalization_score ?? null
-        if (normScore !== null) {
-          let normAdj = 0
-          if (normScore < 0.3)      normAdj = -30
-          else if (normScore < 0.5) normAdj = -15
-          else if (normScore >= 0.9) normAdj = 5
-          if (normAdj !== 0) {
-            finalVerdict.confidence = Math.max(0, Math.min(100, finalVerdict.confidence + normAdj))
-            finalVerdict.decision_trace.push({ type: 'penalty', label: `Normalization score ${normScore} — confidence ${normAdj > 0 ? '+' : ''}${normAdj}`, value: normAdj, normalizationScore: normScore })
-          }
-        }
-
-        // FIELD COHERENCE SCORING
-        // Penalizes ACS objects where the event_type is present but expected companion fields are missing
-        // Prevents normalization score inflation from single-field population
-        if (acsObject?.acs_data) {
-          const acs = acsObject.acs_data
-          // Read .value — all acs_data fields are now { value, source } provenance objects
-          const eventType = acs.event_type?.value ?? acs.event_type ?? 'unknown'
-          const fieldVal = (f) => {
-            const v = acs[f]
-            return v && typeof v === 'object' && 'value' in v ? v.value : v
-          }
-
-          const coherenceExpectations = {
-            auth:      ['user', 'src_ip'],
-            process:   ['command_line', 'user'],
-            privilege: ['user', 'object_name'],
-            network:   ['src_ip', 'dest_ip'],
-          }
-
-          const expectedFields = coherenceExpectations[eventType]
-          if (expectedFields && eventType !== 'unknown') {
-            const presentCount = expectedFields.filter(f => {
-              const v = fieldVal(f)
-              return v !== null && v !== undefined && v !== 'unknown'
-            }).length
-            const coherenceRatio = presentCount / expectedFields.length
-
-            if (coherenceRatio === 0) {
-              const penalty = 20
-              finalVerdict.confidence = Math.max(0, finalVerdict.confidence - penalty)
-              finalVerdict.decision_trace.push({
-                type: 'penalty',
-                label: `Field incoherence — ${eventType} event with no expected companion fields, confidence -${penalty}`,
-                value: -penalty,
-                event_type: eventType,
-                missing: expectedFields
-              })
-            } else if (coherenceRatio < 0.5) {
-              const penalty = 10
-              finalVerdict.confidence = Math.max(0, finalVerdict.confidence - penalty)
-              finalVerdict.decision_trace.push({
-                type: 'penalty',
-                label: `Field incoherence — ${eventType} event missing most companion fields, confidence -${penalty}`,
-                value: -penalty,
-                event_type: eventType,
-                missing: expectedFields.filter(f => { const v = fieldVal(f); return !v || v === 'unknown' })
-              })
-            }
-          }
-        }
-
-        // SIGNAL COHERENCE PENALTY
-        // When behavioral signals point to unrelated MITRE tactics, confidence is reduced
-        // Coherent evidence (multiple signals, same technique) is more credible than scattered evidence
-        const behavioralSignalsWithMitre = (finalVerdict.signals ?? [])
-          .filter(s => s.signal_layer === 'behavioral' && s.mitre)
-
-        if (behavioralSignalsWithMitre.length >= 2) {
-          const mitreTactics = new Set(
-            behavioralSignalsWithMitre.map(s => {
-              const tacticMap = {
-                'T1110': 'CredentialAccess', 'T1110.001': 'CredentialAccess', 'T1110.003': 'CredentialAccess',
-                'T1003': 'CredentialAccess', 'T1003.001': 'CredentialAccess', 'T1003.002': 'CredentialAccess',
-                'T1021': 'LateralMovement', 'T1021.001': 'LateralMovement',
-                'T1078': 'DefenseEvasion', 'T1078.004': 'DefenseEvasion',
-                'T1105': 'CommandControl', 'T1027': 'DefenseEvasion',
-                'T1548': 'PrivilegeEscalation', 'T1548.003': 'PrivilegeEscalation',
-                'T1053': 'Persistence', 'T1053.005': 'Persistence',
-                'T1204': 'Execution', 'T1204.002': 'Execution',
-                'T1059': 'Execution', 'T1059.001': 'Execution',
-                'T1530': 'Collection', 'T1098': 'PrivilegeEscalation',
-                'T1070': 'DefenseEvasion', 'T1070.001': 'DefenseEvasion',
-                'T1136': 'Persistence', 'T1136.001': 'Persistence',
-              }
-              return tacticMap[s.mitre] ?? 'Unknown'
-            })
-          )
-
-          const hasUnknownTactic = mitreTactics.has('Unknown')
-          mitreTactics.delete('Unknown')
-
-          if (mitreTactics.size >= 3) {
-            const penalty = 15
-            finalVerdict.confidence = Math.max(0, finalVerdict.confidence - penalty)
-            finalVerdict.decision_trace.push({
-              type: 'penalty',
-              label: `Signal incoherence — ${mitreTactics.size} unrelated MITRE tactics detected, confidence -${penalty}`,
-              value: -penalty,
-              tactics: [...mitreTactics]
-            })
-          } else if (mitreTactics.size === 2 && !hasUnknownTactic) {
-            const penalty = 5
-            finalVerdict.confidence = Math.max(0, finalVerdict.confidence - penalty)
-            finalVerdict.decision_trace.push({
-              type: 'penalty',
-              label: `Signal divergence — ${mitreTactics.size} different MITRE tactics, confidence -${penalty}`,
-              value: -penalty,
-              tactics: [...mitreTactics]
-            })
-          }
-        }
-
-        const failedSourceCount = enrichmentHealth.noIp ? 0 : (enrichmentHealth.failed ?? []).length
-        if (failedSourceCount > 0) {
-          const enrichmentPenalty = failedSourceCount * 8
-          finalVerdict.confidence = Math.max(0, finalVerdict.confidence - enrichmentPenalty)
-          finalVerdict.decision_trace.push({
-            type: 'penalty',
-            label: `Enrichment failed: ${(enrichmentHealth.failed ?? []).join(', ')} — confidence -${enrichmentPenalty}`,
-            value: -enrichmentPenalty,
-            sources: enrichmentHealth.failed ?? [],
-          })
-        }
 
         const parsedContext = Object.entries(parsedAlert)
           .filter(([_, v]) => v !== null)
           .map(([k, v]) => `${k}: ${v}`)
           .join('\n')
 
-        const groqStream = await groq.chat.completions.create({
-          model:       'llama-3.3-70b-versatile',
-          temperature: 0.1,
-          max_tokens:  2000,
-          stream:      false,
-          messages: [
-            {
-              role: 'user',
-              content: buildNarratorPrompt(
-                sanitizedAlert,
-                { alertType: parsedAlert.alertType, fields: parsedContext },
-                enrichmentJudgment,
-                narratorRedisContext,
-                isActiveCampaign,
-                uniqueAssetCount,
-                frequencyMultiplier,
-                finalVerdict,
-                acsObject
-              )
-            }
-          ]
-        })
-
-        const raw = groqStream.choices[0]?.message?.content ?? ''
-
-        const narratorOutput = (() => {
-          try {
-            const jsonMatch = raw.match(/\{[\s\S]*\}/)
-            if (!jsonMatch) return null
-            return JSON.parse(jsonMatch[0])
-          } catch { return null }
+        const narratorFallback = (() => {
+          const mitreToTactic = {
+            'T1110.001': 'Credential Access', 'T1110': 'Credential Access',
+            'T1105': 'Command and Control', 'T1218.005': 'Defense Evasion',
+            'T1204.002': 'Execution', 'T1059.001': 'Execution',
+            'T1053.005': 'Persistence', 'T1543.003': 'Persistence',
+            'T1070.001': 'Defense Evasion', 'T1003.003': 'Credential Access',
+            'T1003.002': 'Credential Access', 'T1078': 'Initial Access',
+            'T1566.001': 'Initial Access',
+          }
+          const tactic = mitreToTactic[finalVerdict.deterministicMitre] ?? getMitreTactic(finalVerdict.deterministicMitre) ?? 'Unknown'
+          const dominantLabel = typeof finalVerdict.decision_trace[0] === 'object' ? finalVerdict.decision_trace[0].label : (finalVerdict.decision_trace[0] ?? '')
+          const asset = acsObject?.acs_data?.host?.value ?? parsedAlert.asset ?? 'the affected asset'
+          const behavioralCount = (finalVerdict.signals ?? []).filter(s => s.signal_layer === 'behavioral').length
+          const temporalNote = (finalVerdict.signals ?? []).some(s => s.signal_layer === 'temporal')
+            ? ` Temporal correlation indicates this indicator has been observed across multiple sessions.` : ''
+          return {
+            indicators:   finalVerdict.decision_trace.slice(0, 5).map(d => typeof d === 'object' ? d.label : d),
+            tactic,
+            mitre_tactic: tactic,
+            mitre_id:     finalVerdict.deterministicMitre ?? 'T0000',
+            mitre_name:   finalVerdict.deterministicMitre
+              ? getMitreName(finalVerdict.deterministicMitre)
+              : finalVerdict.classification ?? 'Unknown',
+            reasoning: `The deterministic engine classified this alert as ${finalVerdict.classification} (${finalVerdict.severity}) based on ${behavioralCount} behavioral signal${behavioralCount !== 1 ? 's' : ''}. ${dominantLabel}.${temporalNote} Investigate ${asset} for signs of persistence or lateral movement consistent with this classification.`,
+          }
         })()
 
-
-        const narratorFallback = {
-          indicators: finalVerdict.decision_trace.slice(0, 5).map(d => typeof d === 'object' ? d.label : d),
-          tactic: (() => {
-            const mitreToTactic = {
-              'T1110.001': 'Credential Access', 'T1110': 'Credential Access',
-              'T1105': 'Command and Control', 'T1218.005': 'Defense Evasion',
-              'T1204.002': 'Execution', 'T1059.001': 'Execution',
-              'T1053.005': 'Persistence', 'T1543.003': 'Persistence',
-              'T1070.001': 'Defense Evasion', 'T1003.003': 'Credential Access',
-              'T1003.002': 'Credential Access', 'T1078': 'Defense Evasion',
-              'T1566.001': 'Initial Access',
-            }
-            return mitreToTactic[finalVerdict.deterministicMitre] ?? 'Unknown'
-          })(),
-          mitre_id: finalVerdict.deterministicMitre ?? 'T0000',
-          mitre_name: finalVerdict.deterministicMitre ? getMitreName(finalVerdict.deterministicMitre) : finalVerdict.classification,
-          mitre_tactic: (() => {
-            const mitreToTactic = {
-              'T1110.001': 'Credential Access', 'T1110': 'Credential Access',
-              'T1105': 'Command and Control', 'T1218.005': 'Defense Evasion',
-              'T1204.002': 'Execution', 'T1059.001': 'Execution',
-              'T1053.005': 'Persistence', 'T1543.003': 'Persistence',
-              'T1070.001': 'Defense Evasion', 'T1003.003': 'Credential Access',
-              'T1003.002': 'Credential Access', 'T1078': 'Defense Evasion',
-              'T1566.001': 'Initial Access',
-            }
-            return mitreToTactic[finalVerdict.deterministicMitre] ?? 'Unknown'
-          })(),
-          reasoning: `Deterministic engine classified this alert as ${finalVerdict.classification} with ${finalVerdict.severity} severity. ${typeof finalVerdict.decision_trace[0] === 'object' ? finalVerdict.decision_trace[0].label : finalVerdict.decision_trace[0]}. ${typeof finalVerdict.decision_trace[1] === 'object' ? finalVerdict.decision_trace[1].label : finalVerdict.decision_trace[1]}. Immediate investigation of ${acsObject?.acs_data?.host?.value ?? parsedAlert.asset ?? 'the affected asset'} is recommended.`
+        let narrator = narratorFallback
+        try {
+          const groqStream = await groq.chat.completions.create({
+            model:       'llama-3.3-70b-versatile',
+            temperature: 0.1,
+            max_tokens:  2000,
+            stream:      false,
+            messages: [
+              {
+                role: 'user',
+                content: buildNarratorPrompt(
+                  sanitizedAlert,
+                  { alertType: parsedAlert.alertType, fields: parsedContext },
+                  enrichmentJudgment,
+                  narratorRedisContext,
+                  isActiveCampaign,
+                  uniqueAssetCount,
+                  frequencyMultiplier,
+                  finalVerdict,
+                  acsObject
+                )
+              }
+            ]
+          })
+          const raw = groqStream.choices[0]?.message?.content ?? ''
+          const narratorOutput = (() => {
+            try {
+              const jsonMatch = raw.match(/\{[\s\S]*\}/)
+              if (!jsonMatch) return null
+              return JSON.parse(jsonMatch[0])
+            } catch { return null }
+          })()
+          narrator = narratorOutput ?? narratorFallback
+        } catch (groqErr) {
+          console.error('[ARBITER] Groq call failed, using deterministic fallback:', groqErr.message)
+          narrator = narratorFallback
         }
-
-        const narrator = narratorOutput ?? narratorFallback
 
         const { recommendations: deterministicRecommendations, provenance: deterministicProvenance }
           = buildDeterministicRecommendations(finalVerdict.signals ?? signals, null, acsObject)
@@ -2195,16 +2226,12 @@ export async function POST(request) {
           mitre_id: (() => {
             if (finalVerdict.deterministicMitre) return finalVerdict.deterministicMitre
             const classificationMitre = getClassificationMitre(finalVerdict.classification)?.id
-            if (classificationMitre) return classificationMitre
-            // Only use narrator MITRE if classification is not UNKNOWN
-            if (finalVerdict.classification !== 'UNKNOWN' && narrator?.mitre_id && narrator.mitre_id !== 'T0000') return narrator.mitre_id
-            return null
+            return classificationMitre ?? null
           })(),
           mitre_name: (() => {
             if (finalVerdict.deterministicMitre) return getMitreName(finalVerdict.deterministicMitre)
             const fb = getClassificationMitre(finalVerdict.classification)
             if (fb) return getMitreName(fb.id) ?? finalVerdict.classification
-            if (finalVerdict.classification !== 'UNKNOWN' && narrator?.mitre_name) return narrator.mitre_name
             return finalVerdict.classification
           })(),
           tactic: (() => {
@@ -2221,8 +2248,10 @@ export async function POST(request) {
           })(),
           recommendations:           deterministicRecommendations,
           recommendation_provenance: deterministicProvenance,
-          verdict_class:             finalVerdict.verdictClass ?? 'NO_DETECTION',
-          verdict_reliability_class: finalVerdict.verdictReliabilityClass ?? 'TRACE_REQUIRED',
+          verdict_class:             finalVerdict.verdictClass,
+          verdict_reliability_class: finalVerdict.verdictReliabilityClass,
+          behavioral_confidence:     finalVerdict.behavioral_confidence,
+          quality_factor:            finalVerdict.quality_factor,
           reasoning: (() => {
             const r = narrator?.reasoning
             if (!r) return narratorFallback.reasoning
@@ -2322,8 +2351,10 @@ export async function POST(request) {
             vendorOrigin:             acsObject?.meta?.vendor_origin ?? 'unknown',
             behavioralSignalCount:    (finalVerdict.signals ?? []).filter(s => s.signal_layer === 'behavioral').length,
             enrichmentSignalCount:    (finalVerdict.signals ?? []).filter(s => s.signal_layer === 'enrichment').length,
-            verdictClass:             finalVerdict.verdictClass ?? 'NO_DETECTION',
-            verdictReliabilityClass:  finalVerdict.verdictReliabilityClass ?? 'TRACE_REQUIRED',
+            verdictClass:             finalVerdict.verdictClass,
+            verdictReliabilityClass:  finalVerdict.verdictReliabilityClass,
+            behavioral_confidence:    finalVerdict.behavioral_confidence,
+            quality_factor:           finalVerdict.quality_factor,
           }
         })
 

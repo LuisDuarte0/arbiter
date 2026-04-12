@@ -330,49 +330,6 @@ function getEnrichmentHealth(enrichment, ips) {
 
 // ── POST-LLM DETERMINISTIC VALIDATION & OVERRIDE ──────────────────────────────
 // Rules enforced regardless of LLM output. LLM cannot violate these.
-function validateAndOverrideTriage(triage, parsedAlert, enrichmentJudgment, redisHits) {
-  const overrides = []
-
-  const knownBenignIPs = new Set([
-    '8.8.8.8', '8.8.4.4',                   // Google DNS
-    '1.1.1.1', '1.0.0.1',                   // Cloudflare DNS
-    '9.9.9.9',                               // Quad9 DNS
-    '208.67.222.222', '208.67.220.220',      // OpenDNS
-    '4.2.2.1', '4.2.2.2',                   // Level3 DNS
-    '127.0.0.1', '0.0.0.0',                 // Localhost
-    '255.255.255.255',                       // Broadcast
-  ])
-
-  // 1. Classification must not contain MITRE ID
-  if (/T\d{4}(\.\d{3})?/.test(triage.classification)) {
-    triage.classification = triage.classification.replace(/T\d{4}(\.\d{3})?\s*/g, '').trim()
-    overrides.push('classification_cleaned')
-  }
-
-  // 2. Asset criticality — enforce deterministically
-  // TODO: migrate to ACS normalization layer (mappers)
-  // Currently compensates for asset criticality patterns not
-  // captured during normalization. Keep until mapper migration.
-  const triageAssetName = (triage.affected_asset ?? '').toUpperCase()
-  const knownCriticalPatterns = /\b(DC|PDC|BDC|ADC|ADDC|SQL|DB[-_]|[-_]DB|ORA|ORACLE|POSTGRES|MYSQL|BACKUP|BKP|VEEAM|EXCHANGE|EXCH|MAIL)\b/i
-  if (knownCriticalPatterns.test(triageAssetName) && !triage.asset_is_critical) {
-    triage.asset_is_critical = true
-    overrides.push('asset_criticality_enforced')
-  }
-  // SRV alone is NOT critical
-  if (/^[A-Z0-9-]*SRV[A-Z0-9-]*$/.test(triageAssetName) && !knownCriticalPatterns.test(triageAssetName) && triage.asset_is_critical) {
-    triage.asset_is_critical = false
-    overrides.push('asset_criticality_corrected')
-  }
-
-  // 3. Confidence bounds
-  // TODO: migrate to end of aggregateSignals() behavioral_confidence
-  // computation. Keep here as safety net until then.
-  triage.confidence = Math.max(0, Math.min(100, Math.round(triage.confidence ?? 50)))
-
-  return { triage, overrides }
-}
-
 // ── DECISION ENGINE ───────────────────────────────────────────────────────────
 
 // Provenance independence gate — declared pair variant.
@@ -2105,6 +2062,14 @@ export async function POST(request) {
         const maxRedisCount       = redisHits?.reduce((max, h) => Math.max(max, h.count ?? 0), 0) ?? 0
         const enrichmentJudgment  = buildEnrichmentJudgment(enrichment, ips, frequencyMultiplier)
 
+        // Override parseQuality to 'generic' when vendor detection failed.
+        // parseAlert() cannot know the vendor — normalize() detects it.
+        // Must run before aggregateSignals() so computeQualityFactor() sees the correct value.
+        const isGenericVendor = (acsObject?.meta?.vendor_origin ?? 'unknown') === 'unknown'
+        if (isGenericVendor && parsedAlert.parseQuality !== 'structured') {
+          parsedAlert.parseQuality = 'generic'
+        }
+
         const signals      = getSignals(parsedAlert, enrichmentJudgment, redisHits, acsObject)
         let finalVerdict
         try {
@@ -2129,7 +2094,6 @@ export async function POST(request) {
         // process the input at all, not merely when no signals were found.
         // NO_DETECTION = system understood the input, found nothing.
         // INSUFFICIENT_DATA = system could not process the input.
-        const isGenericVendor = (acsObject?.meta?.vendor_origin ?? 'unknown') === 'unknown'
         const isLowNormScore  = (acsObject?.meta?.normalization_score ?? 0) <= 0.1
         const hasNoIPs        = ips.length === 0
         const isInsufficientData = isGenericVendor && isLowNormScore && hasNoIPs
@@ -2137,13 +2101,6 @@ export async function POST(request) {
         if (isInsufficientData) {
           finalVerdict.verdictClass = 'INSUFFICIENT_DATA'
           finalVerdict.verdictReliabilityClass = 'TRACE_REQUIRED'
-        }
-
-        // Override parseQuality to 'generic' when vendor detection failed.
-        // parseAlert() cannot know the vendor — normalize() detects it.
-        // Reconcile here so quality_factor reflects actual parse fidelity.
-        if (isGenericVendor && parsedAlert.parseQuality !== 'structured') {
-          parsedAlert.parseQuality = 'generic'
         }
 
         const isActiveCampaign = (finalVerdict?.signals ?? signals).some(
@@ -2183,6 +2140,14 @@ export async function POST(request) {
           }
         })()
 
+        function isValidNarratorOutput(obj) {
+          if (!obj || typeof obj !== 'object') return false
+          if (typeof obj.reasoning !== 'string' || obj.reasoning.trim().length < 20) return false
+          if (typeof obj.tactic !== 'string' || obj.tactic.trim().length === 0) return false
+          if (typeof obj.mitre_tactic !== 'string' || obj.mitre_tactic.trim().length === 0) return false
+          return true
+        }
+
         let narrator = narratorFallback
         try {
           const groqStream = await groq.chat.completions.create({
@@ -2215,7 +2180,7 @@ export async function POST(request) {
               return JSON.parse(jsonMatch[0])
             } catch { return null }
           })()
-          narrator = narratorOutput ?? narratorFallback
+          narrator = isValidNarratorOutput(narratorOutput) ? narratorOutput : narratorFallback
         } catch (groqErr) {
           console.error('[ARBITER] Groq call failed, using deterministic fallback:', groqErr.message)
           narrator = narratorFallback
@@ -2239,12 +2204,19 @@ export async function POST(request) {
               const first = parsedAlert.allAssets.split(',')[0]?.trim()
               if (first && first !== 'UNKNOWN') return first
             }
-            // Priority 1b: ACS normalizer extracted host or CloudTrail target user
-            const acsHost = acsObject?.acs_data?.host?.value ?? null
-            if (acsHost && acsHost !== 'UNKNOWN' && acsHost.length > 0) return acsHost
+            // Priority 2: CloudTrail target user
             const acsTargetUser = acsObject?.acs_data?.target_user?.value ?? null
             if (acsTargetUser && acsTargetUser.length > 0) return `IAM:${acsTargetUser}`
-            // Priority 2: regex scan of raw alert text for computer/hostname patterns
+            // Priority 2.5: ACS resource name (S3 bucket, DynamoDB table, CloudTrail resource).
+            // Explicit ACS field preferred over regex scan of raw text.
+            const acsResource = acsObject?.acs_data?.resource_name?.value
+              ?? acsObject?.acs_data?.object_name?.value
+              ?? null
+            if (acsResource && acsResource !== 'UNKNOWN' && acsResource.length > 0
+                && !acsResource.includes(':') && !acsResource.includes('/')) {
+              return acsResource
+            }
+            // Priority 3: regex scan of raw alert text for computer/hostname patterns
             const computerPatterns = [
               /(?:Computer|ComputerName|Hostname|Workstation)[:\s=]+([A-Za-z0-9][A-Za-z0-9\-_.]{2,30})/i,
               /(?:host|device)[:\s=]+([A-Za-z0-9][A-Za-z0-9\-_.]{2,30})/i,
@@ -2256,9 +2228,13 @@ export async function POST(request) {
                 return m[1].toUpperCase()
               }
             }
-            // Priority 3: use username as host identifier
+            // Priority 4: use username as host identifier
             const usernameForHost = acsObject?.acs_data?.user?.value ?? parsedAlert.username
             if (usernameForHost && usernameForHost !== 'system' && !usernameForHost.includes('$') && usernameForHost.length > 3) {
+              // Exclude ARN strings — they contain colons and slashes and are not meaningful asset identifiers
+              if (usernameForHost.includes(':') || usernameForHost.includes('/')) {
+                return 'UNKNOWN'
+              }
               return `HOST:${usernameForHost.toUpperCase()}`
             }
             return 'UNKNOWN'

@@ -427,10 +427,20 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
     ?? ''
   ).toLowerCase()
 
-  if (procName.includes('certutil') && /-urlcache|-split|-f/.test(cmdLine)) {
+  // CERTUTIL download cradle
+  if (procName.includes('certutil')
+      && /-urlcache|-split|-f\s/i.test(cmdLine)
+      && checkIndependencePair(acsObject?.acs_data, 'command_line', 'process_name')) {
     signals.push({ rule: 'LOLBIN_CERTUTIL_DOWNLOAD', classification: 'Malicious File Download via LOLBin', label: 'certutil used as download cradle', severity: 'HIGH', confidence: 92, weight: 5, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1105', explanation_weight: 'medium', confidence_boost: 10 })
-    if (/users\\public|windows\\temp|programdata/i.test(cmdLine))
-      signals.push({ rule: 'LOLBIN_CERTUTIL_SUSPICIOUS_PATH', classification: 'LOLBin Staging to Suspicious Path', label: 'certutil writing to suspicious path', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1105', explanation_weight: 'high', confidence_boost: 15 })
+  }
+
+  // CERTUTIL suspicious path — independent of download flags
+  // Fires when certutil writes decoded/processed content to
+  // user-writable or temp directories regardless of technique
+  if (procName.includes('certutil')
+      && /users\\public|windows\\temp|programdata/i.test(cmdLine)
+      && checkIndependencePair(acsObject?.acs_data, 'command_line', 'process_name')) {
+    signals.push({ rule: 'LOLBIN_CERTUTIL_SUSPICIOUS_PATH', classification: 'LOLBin Staging to Suspicious Path', label: 'certutil writing to suspicious path', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1105', explanation_weight: 'high', confidence_boost: 15 })
   }
 
   if (procName.includes('mshta') && /http[s]?:\/\//i.test(cmdLine))

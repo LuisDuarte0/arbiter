@@ -113,10 +113,18 @@ export default function AlertQueue({ history, activeId, collapsed, onToggle, onS
         )}
 
         {history.length === 0 && !activeId && (
-          <div className="arb-queue-empty">
-            No analyses yet.<br/>
-            Paste an alert and hit<br/>
-            ANALYZE to begin.
+          <div className="arb-queue-empty" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', padding: '32px 16px' }}>
+            <svg viewBox="-8 0 136 120" width="32" height="28" xmlns="http://www.w3.org/2000/svg">
+              <line x1="60" y1="8" x2="6" y2="112" stroke="rgba(255,255,255,0.15)" strokeWidth="17" strokeLinecap="square"/>
+              <line x1="60" y1="8" x2="114" y2="112" stroke="rgba(255,255,255,0.15)" strokeWidth="17" strokeLinecap="square"/>
+              <line x1="-6" y1="68" x2="126" y2="68" stroke="rgba(255,255,255,0.15)" strokeWidth="7" strokeLinecap="square"/>
+            </svg>
+            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.15em', textAlign: 'center', lineHeight: '2.0', textTransform: 'uppercase' }}>
+              NO ACTIVE CASES
+              <span style={{ display: 'block', fontSize: '9px', opacity: 0.55, letterSpacing: '0.08em', textTransform: 'none', marginTop: '4px' }}>
+                Submit an alert to begin triage.
+              </span>
+            </div>
           </div>
         )}
 

@@ -1,6 +1,7 @@
 'use client'
-import { useState } from 'react'
+import React, { useState, useRef, useCallback } from 'react'
 import ContainmentModal from './ContainmentModal'
+import ThreatScanner from './ThreatScanner'
 
 function Badge({ severity }) {
   return <span className={`arb-badge arb-${severity.toLowerCase()}`}>{severity}</span>
@@ -107,23 +108,202 @@ const S = {
   containmentBtnLabel: { fontFamily: 'var(--font-mono), monospace', fontSize: '10px', fontWeight: '500', color: '#080C14', letterSpacing: '0.08em', whiteSpace: 'nowrap' },
 }
 
+function EnrichingLoader() {
+  const canvasRef = React.useRef(null)
+  React.useEffect(() => {
+    const cv = canvasRef.current
+    if (!cv) return
+    const ctx = cv.getContext('2d')
+    const sources = [
+      { label: 'ABUSEIPDB', freq: 1.1 },
+      { label: 'VIRUSTOTAL', freq: 0.8 },
+      { label: 'OTX', freq: 1.4 },
+    ]
+    let t = 0, lastTs = null, rafId = null
+    function frame(ts) {
+      if (!cv.isConnected) return
+      const dt = lastTs ? Math.min(ts - lastTs, 50) : 0
+      lastTs = ts
+      t += dt * 0.001
+      const dpr = window.devicePixelRatio || 1
+      const W = cv.width / dpr
+      const H = cv.height / dpr
+      ctx.clearRect(0, 0, cv.width, cv.height)
+      ctx.save(); ctx.scale(dpr, dpr)
+      const scanX = ((t * 0.4) % 1.4 - 0.2) * W
+      sources.forEach((s, i) => {
+        const y = 14 + i * 20
+        const barStart = 90, barW = W - 110
+        ctx.fillStyle = 'rgba(245,158,11,0.08)'
+        ctx.fillRect(barStart, y, barW, 6)
+        ctx.fillStyle = 'rgba(245,158,11,0.25)'
+        ctx.font = '700 7px monospace'; ctx.textAlign = 'right'
+        ctx.fillText(s.label, barStart - 8, y + 6)
+        const dist = Math.abs(scanX - (y + 3))
+        const lit = dist < 30
+        if (lit) {
+          const op = Math.max(0, 1 - dist / 30)
+          ctx.fillStyle = `rgba(245,158,11,${op * 0.55})`
+          ctx.fillRect(barStart, y, barW, 6)
+          ctx.fillStyle = `rgba(245,158,11,${op * 0.9})`
+          ctx.font = '700 7px monospace'; ctx.textAlign = 'right'
+          ctx.fillText(s.label, barStart - 8, y + 6)
+        }
+      })
+      for (let i = 0; i < 8; i++) {
+        const bx = scanX - i * 6
+        if (bx < 90 || bx > W - 20) continue
+        ctx.fillStyle = `rgba(245,158,11,${(1 - i / 8) * 0.12})`
+        ctx.fillRect(bx, 8, 4, 56)
+      }
+      if (scanX > 90 && scanX < W - 20) {
+        ctx.fillStyle = 'rgba(245,158,11,0.7)'
+        ctx.fillRect(scanX, 8, 1.5, 56)
+      }
+      ctx.fillStyle = 'rgba(245,158,11,0.25)'
+      ctx.font = '6px monospace'; ctx.textAlign = 'center'
+      ctx.fillText('QUERYING THREAT INTELLIGENCE', W / 2, H - 4)
+      ctx.restore()
+      rafId = requestAnimationFrame(frame)
+    }
+    const dpr = window.devicePixelRatio || 1
+    cv.width = cv.offsetWidth * dpr
+    cv.height = cv.offsetHeight * dpr
+    rafId = requestAnimationFrame(frame)
+    return () => { if (rafId) cancelAnimationFrame(rafId) }
+  }, [])
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ display: 'block', width: '100%', height: '80px' }}
+    />
+  )
+}
+
+function AnalyzingLoader() {
+  const canvasRef = React.useRef(null)
+  React.useEffect(() => {
+    const cv = canvasRef.current
+    if (!cv) return
+    const ctx = cv.getContext('2d')
+    const stages = ['ACS', 'BEH', 'ENR', 'TMP', 'AGG']
+    const colors = [
+      'rgba(245,158,11,1)', 'rgba(245,158,11,0.8)',
+      'rgba(239,68,68,0.9)', 'rgba(206,147,216,0.8)', 'rgba(245,158,11,1)'
+    ]
+    let t = 0, lastTs = null, rafId = null
+    let particles = [], spawn = 0
+    function frame(ts) {
+      if (!cv.isConnected) return
+      const dt = lastTs ? Math.min(ts - lastTs, 50) : 0
+      lastTs = ts
+      t += dt * 0.001
+      spawn += dt
+      const dpr = window.devicePixelRatio || 1
+      const W = cv.width / dpr
+      const H = cv.height / dpr
+      const segW = Math.min(48, (W - 80) / stages.length - 8)
+      const gap = 10
+      const totalW = stages.length * segW + (stages.length - 1) * gap
+      const startX = (W - totalW) / 2
+      if (spawn > 500) {
+        spawn = 0
+        particles.push({ x: startX - 10, p: 0, speed: 0.0005 + Math.random() * 0.0003 })
+      }
+      particles = particles.filter(p => p.p < 1)
+      ctx.clearRect(0, 0, cv.width, cv.height)
+      ctx.save(); ctx.scale(dpr, dpr)
+      stages.forEach((s, i) => {
+        const x = startX + i * (segW + gap)
+        ctx.strokeStyle = 'rgba(245,158,11,0.10)'; ctx.lineWidth = 0.5
+        ctx.strokeRect(x, 18, segW, 28)
+        ctx.fillStyle = 'rgba(245,158,11,0.12)'; ctx.font = '7px monospace'; ctx.textAlign = 'center'
+        ctx.fillText(s, x + segW / 2, 34)
+        if (i < stages.length - 1) {
+          ctx.strokeStyle = 'rgba(245,158,11,0.08)'; ctx.lineWidth = 0.5
+          ctx.beginPath(); ctx.moveTo(x + segW, 32); ctx.lineTo(x + segW + gap, 32); ctx.stroke()
+        }
+      })
+      particles.forEach(p => {
+        p.p += dt * p.speed
+        const x = startX - 10 + (totalW + 30) * p.p
+        const stageI = Math.floor((x - startX) / (segW + gap))
+        const col = stageI >= 0 && stageI < stages.length ? colors[stageI] : 'rgba(245,158,11,1)'
+        if (stageI >= 0 && stageI < stages.length) {
+          const sx = startX + stageI * (segW + gap)
+          ctx.fillStyle = col.replace(/[\d.]+\)$/, '0.08)')
+          ctx.fillRect(sx, 18, segW, 28)
+          ctx.strokeStyle = col.replace(/[\d.]+\)$/, '0.5)')
+          ctx.lineWidth = 1; ctx.strokeRect(sx, 18, segW, 28)
+          ctx.fillStyle = col.replace(/[\d.]+\)$/, '0.8)')
+          ctx.font = '700 7px monospace'; ctx.textAlign = 'center'
+          ctx.fillText(stages[stageI], sx + segW / 2, 34)
+        }
+        for (let i = 1; i < 5; i++) {
+          ctx.fillStyle = `rgba(245,158,11,${(1 - i / 5) * 0.3})`
+          ctx.beginPath(); ctx.arc(x - i * 8, 32, 1.5, 0, Math.PI * 2); ctx.fill()
+        }
+        ctx.fillStyle = '#F59E0B'
+        ctx.beginPath(); ctx.arc(x, 32, 3, 0, Math.PI * 2); ctx.fill()
+      })
+      ctx.fillStyle = 'rgba(245,158,11,0.25)'
+      ctx.font = '6px monospace'; ctx.textAlign = 'center'
+      ctx.fillText('EVALUATING BEHAVIORAL SIGNALS', W / 2, H - 4)
+      ctx.restore()
+      rafId = requestAnimationFrame(frame)
+    }
+    const dpr = window.devicePixelRatio || 1
+    cv.width = cv.offsetWidth * dpr
+    cv.height = cv.offsetHeight * dpr
+    rafId = requestAnimationFrame(frame)
+    return () => { if (rafId) cancelAnimationFrame(rafId) }
+  }, [])
+  return (
+    <canvas
+      ref={canvasRef}
+      style={{ display: 'block', width: '100%', height: '80px' }}
+    />
+  )
+}
+
 export default function AnalysisPanel({ alertText, setAlertText, result, loading, loadingPhase, error, onTriage, onReset }) {
-  const triage        = result?.triage ?? null
+  const [containmentOpen, setContainmentOpen] = useState(false)
+
+  const effectiveResult = result
+  const triage        = effectiveResult?.triage ?? null
   const decisionTrace = (() => {
-    const raw = result?.meta?.decisionTrace ?? result?.meta?.deterministicOverrides ?? []
+    const raw = effectiveResult?.meta?.decisionTrace ?? effectiveResult?.meta?.deterministicOverrides ?? []
     return raw.filter(e => typeof e === 'object' && e.type)
   })()
-  const signals       = result?.meta?.signals ?? []
-  const [containmentOpen, setContainmentOpen] = useState(false)
+  const signals       = effectiveResult?.meta?.signals ?? []
+
+  // ── Threat Scanner state ─────────────────────────────────────────────────
+  // Scanner is active when the field is empty and the user has not yet
+  // focused or interacted with it. Once dismissed, it restarts only after
+  // the field is empty AND focus has left the textarea for 1.5 s.
+  const [scannerDismissed, setScannerDismissed] = useState(false)
+  const restartTimerRef = useRef(null)
+  const scannerActive = alertText.trim() === '' && !scannerDismissed
+
+  const handleTextareaFocus = useCallback(() => {
+    if (restartTimerRef.current) clearTimeout(restartTimerRef.current)
+    setScannerDismissed(true)
+  }, [])
+
+  const handleTextareaBlur = useCallback(() => {
+    if (alertText.trim() === '') {
+      restartTimerRef.current = setTimeout(() => setScannerDismissed(false), 1500)
+    }
+  }, [alertText])
 
   const isUrgent = triage?.severity === 'CRITICAL' || triage?.severity === 'HIGH'
 
   const verdictClass = triage?.verdict_class
-    ?? result?.meta?.verdictClass
+    ?? effectiveResult?.meta?.verdictClass
     ?? 'DEFENSIBLE_VERDICT'
 
   const verdictReliabilityClass = triage?.verdict_reliability_class
-    ?? result?.meta?.verdictReliabilityClass
+    ?? effectiveResult?.meta?.verdictReliabilityClass
     ?? 'TRACE_REQUIRED'
 
   const isIBE = verdictClass === 'NO_DETECTION'
@@ -134,7 +314,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
   const isLowConfidence = verdictClass === 'LOW_CONFIDENCE_VERDICT'
 
   const displayConfidence = triage?.behavioral_confidence ?? triage?.confidence ?? 0
-  const qualityFactor = triage?.quality_factor ?? result?.meta?.quality_factor ?? 'UNKNOWN'
+  const qualityFactor = triage?.quality_factor ?? effectiveResult?.meta?.quality_factor ?? 'UNKNOWN'
   const qfColors = {
     HIGH:    { color: 'var(--green)',      label: 'DATA: HIGH' },
     MEDIUM:  { color: 'var(--amber)',      label: 'DATA: MED'  },
@@ -145,7 +325,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
 
   const isSurfaceSafe = verdictReliabilityClass === 'SURFACE_SAFE'
 
-  const vendorOrigin = result?.meta?.vendor_origin ?? 'unknown'
+  const vendorOrigin = effectiveResult?.meta?.vendor_origin ?? 'unknown'
 
   const vendorDisplayName = {
     windows:    'Windows Event Log',
@@ -163,11 +343,12 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
     unknown:    'Investigation · Warnings',
   }[vendorOrigin] ?? 'Investigation · Warnings'
 
+
   return (
     <div className="arb-panel arb-analysis">
 
-      {/* INPUT BLOCK */}
-      <div className="arb-input-block">
+      {/* INPUT BLOCK — hidden when result is present */}
+      {!result && <div className="arb-input-block">
         <div className="arb-input-header">
           <span className="arb-input-label">RAW ALERT INPUT</span>
           <label style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--amber)', letterSpacing: '0.08em', cursor: 'pointer', borderBottom: '0.5px solid var(--amber-40)', paddingBottom: '1px' }}>
@@ -184,13 +365,19 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
             />
           </label>
         </div>
-        <textarea
-          className="arb-textarea"
-          value={alertText}
-          onChange={e => setAlertText(e.target.value)}
-          placeholder={`EventCode=4625 LogonType=3\nTargetUserName=admin\nIpAddress=185.220.101.47\nFailureReason=%%2313\n\n— paste your alert here —`}
-          spellCheck={false}
-        />
+        <div className="arb-textarea-wrapper">
+          <ThreatScanner active={scannerActive} />
+          <textarea
+            className={`arb-textarea${scannerActive ? ' scanner-idle' : ''}`}
+            value={alertText}
+            onChange={e => setAlertText(e.target.value)}
+            onFocus={handleTextareaFocus}
+            onBlur={handleTextareaBlur}
+            style={{ minHeight: result || loading ? '140px' : '110px' }}
+            placeholder={`EventCode=4625 LogonType=3\nTargetUserName=admin\nIpAddress=185.220.101.47\nFailureReason=%%2313\n\n— paste your alert here —`}
+            spellCheck={false}
+          />
+        </div>
         <button className="arb-button" onClick={onTriage} disabled={loading || !alertText.trim()}>
           {loading ? 'ANALYZING...' : 'ANALYZE ALERT →'}
         </button>
@@ -202,28 +389,28 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
             )}
           </div>
         )}
-      </div>
+      </div>}
 
       {/* LOADING */}
       {loading && (
-        <div className="arb-loading">
-          <div className="arb-loading-dot" />
-          <span className="arb-loading-text">
-            {loadingPhase === 'enriching' ? 'ENRICHING THREAT INTELLIGENCE...' : 'ARBITER IS ANALYZING YOUR ALERT'}
-          </span>
+        <div style={{ padding: '16px 22px', borderBottom: '0.5px solid var(--border)' }}>
+          <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'rgba(245,158,11,0.5)', letterSpacing: '0.15em', marginBottom: '10px' }}>
+            {loadingPhase === 'enriching' ? 'ENRICHING THREAT INTELLIGENCE' : 'ARBITER IS ANALYZING YOUR ALERT'}
+          </div>
+          {loadingPhase === 'enriching' ? <EnrichingLoader /> : <AnalyzingLoader />}
         </div>
       )}
 
       {/* EMPTY STATE */}
       {!result && !loading && (
-        <div style={{ padding: '36px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', opacity: 0.5 }}>
+        <div style={{ padding: '16px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', opacity: 0.75 }}>
           <svg viewBox="-8 0 136 120" width="28" height="25" xmlns="http://www.w3.org/2000/svg">
-            <line x1="60" y1="8" x2="6" y2="112" stroke="#334055" strokeWidth="17" strokeLinecap="square"/>
-            <line x1="60" y1="8" x2="114" y2="112" stroke="#334055" strokeWidth="17" strokeLinecap="square"/>
-            <line x1="-6" y1="68" x2="126" y2="68" stroke="#334055" strokeWidth="7" strokeLinecap="square"/>
+            <line x1="60" y1="8" x2="6" y2="112" stroke="rgba(255,255,255,0.20)" strokeWidth="17" strokeLinecap="square"/>
+            <line x1="60" y1="8" x2="114" y2="112" stroke="rgba(255,255,255,0.20)" strokeWidth="17" strokeLinecap="square"/>
+            <line x1="-6" y1="68" x2="126" y2="68" stroke="rgba(255,255,255,0.20)" strokeWidth="7" strokeLinecap="square"/>
           </svg>
-          <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-muted)', letterSpacing: '0.15em', textAlign: 'center', lineHeight: '1.8' }}>
-            READY FOR TRIAGE<br/><span style={{ fontSize: '8px', opacity: 0.6 }}>PASTE AN ALERT AND CLICK ANALYZE</span>
+          <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.18em', textAlign: 'center', lineHeight: '1.8' }}>
+            READY FOR TRIAGE<br/><span style={{ fontSize: '8px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.18em' }}>PASTE AN ALERT AND CLICK ANALYZE</span>
           </div>
         </div>
       )}

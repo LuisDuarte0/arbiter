@@ -201,12 +201,12 @@ function parseAlert(text) {
     /(?:User Name|TargetUserName|SubjectUserName|Username|User)[=:\s]+([A-Za-z0-9._@\\-]+)/i
   )
   const rawAsset = get(
-    ['WorkstationName','ComputerName','Hostname','host','computer','device'],
-    /(?:WorkstationName|ComputerName|Hostname|host)[=:\s]+(\S+)/i
+    ['WorkstationName','ComputerName','Computer','Hostname','host','computer','device'],
+    /(?:WorkstationName|ComputerName|Computer|Hostname|host)[=:\s]+(\S+)/i
   )
 
   const allAssets = (() => {
-    const fromText = (text.match(/(?:WorkstationName|ComputerName|Hostname)[=:\s]+(\S+)/gi) ?? [])
+    const fromText = (text.match(/(?:WorkstationName|ComputerName|Computer|Hostname)[=:\s]+(\S+)/gi) ?? [])
       .map(m => m.trim().split(/[=:\s]+/).pop())
     return [...new Set(fromText)].map(normalizeAsset).filter(Boolean).join(', ')
   })()
@@ -240,7 +240,7 @@ function parseAlert(text) {
     targetUsername:  get(['TargetUserName'], /TargetUserName[=:\s]+(\S+)/i),
     domain:        get(['TargetDomainName','Domain'], /(?:TargetDomainName|Domain)[=:\s]+(\S+)/i),
     // Sysmon uses Image, standard logs use ProcessName/NewProcessName
-    processName:   get(['ProcessName','Image','NewProcessName','process_name'], /(?:New Process Name|ProcessName|NewProcessName|Image)[=:\s]+(.+?)(?:\r?\n|$)/i),
+    processName:   get(['NewProcessName','ProcessName','Image','process_name'], /(?:New Process Name|NewProcessName|(?<![Pp]arent\s*)ProcessName|Image)[=:\s]+(.+?)(?:\r?\n|$)/i),
     commandLine:   get(['CommandLine','ProcessCommandLine','command_line','Process Command Line'], /(?:Process Command Line|CommandLine|ProcessCommandLine)[=:\s]+(.+?)(?:\r?\n|$)/i),
     asset:         rawAsset ? normalizeAsset(rawAsset) : null,
     allAssets,
@@ -421,31 +421,60 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
 
   const cmdLine = (acsObject?.acs_data?.command_line?.value ?? parsed.commandLine ?? '').toLowerCase()
   const procName = (acsObject?.acs_data?.process_name?.value ?? parsed.processName ?? '').toLowerCase()
-  const parentProc = (parsed.parentProcess ?? '').toLowerCase()
+  const parentProc = (
+    acsObject?.acs_data?.parent_process?.value
+    ?? parsed.parentProcess
+    ?? ''
+  ).toLowerCase()
 
   if (procName.includes('certutil') && /-urlcache|-split|-f/.test(cmdLine)) {
-    signals.push({ rule: 'LOLBIN_CERTUTIL_DOWNLOAD', classification: 'Malicious File Download via LOLBin', label: 'certutil used as download cradle', severity: 'HIGH', confidence: 92, weight: 5, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1105', explanation_weight: 'medium', confidence_boost: 10 })
+    signals.push({ rule: 'LOLBIN_CERTUTIL_DOWNLOAD', classification: 'Malicious File Download via LOLBin', label: 'certutil used as download cradle', severity: 'HIGH', confidence: 92, weight: 5, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1105', explanation_weight: 'medium', confidence_boost: 10 })
     if (/users\\public|windows\\temp|programdata/i.test(cmdLine))
-      signals.push({ rule: 'LOLBIN_CERTUTIL_SUSPICIOUS_PATH', classification: 'LOLBin Staging to Suspicious Path', label: 'certutil writing to suspicious path', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1105', explanation_weight: 'high', confidence_boost: 15 })
+      signals.push({ rule: 'LOLBIN_CERTUTIL_SUSPICIOUS_PATH', classification: 'LOLBin Staging to Suspicious Path', label: 'certutil writing to suspicious path', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1105', explanation_weight: 'high', confidence_boost: 15 })
   }
 
   if (procName.includes('mshta') && /http[s]?:\/\//i.test(cmdLine))
-    signals.push({ rule: 'LOLBIN_MSHTA_REMOTE', classification: 'Remote Script Execution via mshta', label: 'mshta executing remote content', severity: 'HIGH', confidence: 90, weight: 5, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1218.005', explanation_weight: 'medium', confidence_boost: 10 })
+    signals.push({ rule: 'LOLBIN_MSHTA_REMOTE', classification: 'Remote Script Execution via mshta', label: 'mshta executing remote content', severity: 'HIGH', confidence: 90, weight: 5, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1218.005', explanation_weight: 'medium', confidence_boost: 10 })
 
   const officeParents = ['winword.exe','excel.exe','powerpnt.exe','outlook.exe']
   const lolbins = ['mshta.exe','wscript.exe','cscript.exe','powershell.exe','cmd.exe','certutil.exe','regsvr32.exe','rundll32.exe']
-  if (officeParents.some(p => parentProc.includes(p)) && lolbins.some(l => procName.includes(l)))
-    signals.push({ rule: 'OFFICE_MACRO_DROPPER', classification: 'Macro-based Dropper Execution', label: 'Office application spawning LOLBin', severity: 'CRITICAL', confidence: 98, weight: 5, evidence: [`ParentProcess=${parentProc}`, `ProcessName=${procName}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1204.002', explanation_weight: 'high', confidence_boost: 15 })
+  if (
+    officeParents.some(p => parentProc.includes(p)) &&
+    lolbins.some(l => procName.includes(l)) &&
+    checkIndependencePair(acsObject?.acs_data, 'parent_process', 'process_name')
+  ) {
+    signals.push({ rule: 'OFFICE_MACRO_DROPPER', classification: 'Macro-based Dropper Execution', label: 'Office application spawning LOLBin', severity: 'CRITICAL', confidence: 98, weight: 5, evidence: [`ParentProcess=${parentProc}`, `ProcessName=${procName}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1204.002', explanation_weight: 'high', confidence_boost: 15, independence_pair: ['parent_process', 'process_name'] })
+  }
 
   if (procName.includes('powershell') && /-enc\b|-encodedcommand/i.test(cmdLine))
-    signals.push({ rule: 'POWERSHELL_ENCODED', classification: 'Encoded PowerShell Execution', label: 'Encoded PowerShell command', severity: 'HIGH', confidence: 85, weight: 4, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1059.001', explanation_weight: 'medium', confidence_boost: 10 })
+    signals.push({ rule: 'POWERSHELL_ENCODED', classification: 'Encoded PowerShell Execution', label: 'Encoded PowerShell command', severity: 'HIGH', confidence: 85, weight: 4, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1059.001', explanation_weight: 'medium', confidence_boost: 10 })
 
   if (eventIds.includes('4698') || eventIds.includes('4702')) {
-    const taskContent = (parsed.taskContent ?? acsObject?.acs_data?.command_line?.value ?? parsed.commandLine ?? parsed.taskName ?? '').toLowerCase()
-    if (/iex|invoke-expression|downloadstring|-enc|certutil/i.test(taskContent))
-      signals.push({ rule: 'SCHEDULED_TASK_CRADLE', classification: 'Malicious Scheduled Task Persistence', label: 'Scheduled task with download cradle', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`EventCode=4698`, `TaskName=${parsed.taskName}`, `Content=${taskContent.slice(0,60)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1053.005', explanation_weight: 'high', confidence_boost: 15 })
-    else
+    // task_content is now an ACS field — prefer it over legacy fallbacks
+    // Falls back to command_line (also ACS) when task_content is absent
+    const taskContent = (
+      acsObject?.acs_data?.task_content?.value
+      ?? acsObject?.acs_data?.command_line?.value
+      ?? parsed.taskContent
+      ?? parsed.commandLine
+      ?? parsed.taskName
+      ?? ''
+    ).toLowerCase()
+
+    // Determine which field pair is available for independence check
+    const hasTaskContentField = !!(acsObject?.acs_data?.task_content?.value)
+    const taskPair = hasTaskContentField
+      ? ['task_content', 'task_name']
+      : ['command_line', 'task_name']
+    const hasTaskGate = checkIndependencePair(acsObject?.acs_data, taskPair[0], taskPair[1])
+
+    const isCradlePattern = /iex|invoke-expression|downloadstring|-enc|certutil/i.test(taskContent)
+    if (isCradlePattern && hasTaskGate) {
+      signals.push({ rule: 'SCHEDULED_TASK_CRADLE', classification: 'Malicious Scheduled Task Persistence', label: 'Scheduled task with download cradle', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`EventCode=4698`, `TaskName=${parsed.taskName}`, `Content=${taskContent.slice(0,60)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1053.005', explanation_weight: 'high', confidence_boost: 15, independence_pair: taskPair })
+    } else {
+      // Pattern matched but independence gate failed, or pattern not matched — benign fallback
       signals.push({ rule: 'SCHEDULED_TASK_CREATED', classification: 'Scheduled Task Created', label: 'Scheduled task created', severity: 'MEDIUM', confidence: 60, weight: 2, evidence: [`EventCode=4698`, `TaskName=${parsed.taskName}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1053.005', explanation_weight: 'low', confidence_boost: 5 })
+    }
   }
 
   if (eventIds.includes('4697') || eventIds.includes('7045')) {
@@ -1950,7 +1979,6 @@ export async function POST(request) {
         }
 
         const parsedAlert   = parseAlert(alertText)
-
         // ── ACS NORMALIZATION (feature/acs-architecture) ──────────────────────
         // Runs alongside existing pipeline — does not yet replace it.
         // Will progressively take over detection in future iterations.

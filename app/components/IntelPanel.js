@@ -16,7 +16,7 @@ function DefangButton({ ip }) {
     navigator.clipboard.writeText(defanged).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500) })
   }
   return (
-    <button onClick={copy} title={`Copy defanged: ${defanged}`} style={{ background: 'none', border: '0.5px solid var(--border-bright)', borderRadius: '2px', color: copied ? '#00ff41' : 'var(--text-muted)', fontFamily: 'var(--font-mono), monospace', fontSize: '7px', letterSpacing: '0.08em', cursor: 'pointer', padding: '2px 5px', transition: 'all 0.15s', flexShrink: 0 }}>
+    <button onClick={copy} title={`Copy defanged: ${defanged}`} style={{ background: copied ? 'rgba(16,185,129,0.1)' : 'none', border: `0.5px solid ${copied ? 'rgba(16,185,129,0.5)' : 'rgba(245,158,11,0.4)'}`, borderRadius: '2px', color: copied ? '#10B981' : 'rgba(245,158,11,0.9)', fontFamily: 'var(--font-mono), monospace', fontSize: '8px', letterSpacing: '0.08em', cursor: 'pointer', padding: '3px 10px', transition: 'all 0.15s', flexShrink: 0, fontWeight: '500' }}>
       {copied ? 'COPIED' : 'DEFANG'}
     </button>
   )
@@ -30,8 +30,6 @@ function ConsensusBadge({ abuse, vt, otx, correlation }) {
   if (maliciousCount >= 3) badges.push({ label: 'MALICIOUS CONSENSUS', color: 'var(--red)', bg: 'rgba(239,68,68,0.12)' })
   else if (maliciousCount === 2) badges.push({ label: 'CROSS-VALIDATED', color: '#F59E0B', bg: 'rgba(245,158,11,0.12)' })
   if (abuse?.isTorNode) badges.push({ label: 'TOR EXIT NODE', color: 'var(--red)', bg: 'rgba(239,68,68,0.1)' })
-  if (isHighVolume) badges.push({ label: 'VOLUMETRIC', color: '#E57373', bg: 'rgba(229,115,115,0.12)' })
-  else if (isPersistent) badges.push({ label: 'PERSISTENT THREAT', color: '#F59E0B', bg: 'rgba(245,158,11,0.1)' })
   if (!badges.length) return null
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '8px' }}>
@@ -44,25 +42,33 @@ function ConsensusBadge({ abuse, vt, otx, correlation }) {
 
 export default function IntelPanel({ result, collapsed, onToggle, indicatorCache, onIpFilter }) {
   const { enrichment, ips, correlation } = result ?? {}
-  const primaryIP = ips?.[0] ?? null
+  const sortedIPs = ips ? [...ips].sort((a, b) => {
+    const scoreA = enrichment?.[a]?.abuseipdb?.score ?? 0
+    const scoreB = enrichment?.[b]?.abuseipdb?.score ?? 0
+    return scoreB - scoreA
+  }) : []
+  const primaryIP = sortedIPs[0] ?? null
   const intel      = primaryIP ? enrichment?.[primaryIP] : null
   const abuse      = intel?.abuseipdb ?? null
   const vt         = intel?.virustotal ?? null
   const otx        = intel?.otx ?? null
   const cached     = primaryIP ? indicatorCache?.[primaryIP] : null
 
-  const redisHit    = correlation?.hits?.find(h => h.key === `ip:${primaryIP}`)
+  const redisHit    = correlation?.hits?.find(h => {
+    const rawKey = h.key?.split(':').slice(2).join(':') ?? ''
+    return rawKey === `ip:${primaryIP}`
+  })
   const isFirstSeen = !redisHit
   const isPersistent = redisHit && redisHit.count >= 2
   const isVolumetric = redisHit && redisHit.count >= 3
 
   return (
     <div className={`arb-panel arb-intel${collapsed ? ' arb-panel-collapsed' : ''}`}>
-      <div className="arb-panel-header">
-        <button className="arb-collapse-btn" onClick={onToggle}>{collapsed ? '‹' : '›'}</button>
-        {!collapsed && <span className="arb-panel-title">Threat Intelligence</span>}
+      <div className="arb-panel-header" style={{ gap: '8px' }}>
+        <button className="arb-collapse-btn" onClick={onToggle} style={{ flexShrink: 0 }}>{collapsed ? '‹' : '›'}</button>
+        {!collapsed && <span className="arb-panel-title" style={{ whiteSpace: 'nowrap' }}>Threat Intelligence</span>}
         {!collapsed && (
-          <span className="arb-panel-badge">
+          <span className="arb-panel-badge" style={{ whiteSpace: 'nowrap', marginLeft: 'auto', flexShrink: 0 }}>
             {result ? `${ips?.length ?? 0} IP${ips?.length !== 1 ? 'S' : ''} ANALYZED` : 'PENDING'}
           </span>
         )}
@@ -71,42 +77,65 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
       <div className="arb-panel-content">
         {!result && (
           <div className="arb-empty">
-            <svg viewBox="-8 0 136 120" width="36" height="32" xmlns="http://www.w3.org/2000/svg">
-              <line x1="60" y1="8" x2="6" y2="112" stroke="#334055" strokeWidth="17" strokeLinecap="square"/>
-              <line x1="60" y1="8" x2="114" y2="112" stroke="#334055" strokeWidth="17" strokeLinecap="square"/>
-              <line x1="-6" y1="68" x2="126" y2="68" stroke="#334055" strokeWidth="7" strokeLinecap="square"/>
+            <svg viewBox="-8 0 136 120" width="32" height="28" xmlns="http://www.w3.org/2000/svg">
+              <line x1="60" y1="8" x2="6" y2="112" stroke="rgba(255,255,255,0.20)" strokeWidth="17" strokeLinecap="square"/>
+              <line x1="60" y1="8" x2="114" y2="112" stroke="rgba(255,255,255,0.20)" strokeWidth="17" strokeLinecap="square"/>
+              <line x1="-6" y1="68" x2="126" y2="68" stroke="rgba(255,255,255,0.20)" strokeWidth="7" strokeLinecap="square"/>
             </svg>
-            <div className="arb-empty-text">Submit an alert to populate threat intelligence</div>
+            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.15em', textAlign: 'center', lineHeight: '2.0', textTransform: 'uppercase' }}>
+              NO INTEL AVAILABLE
+              <span style={{ display: 'block', fontSize: '9px', opacity: 0.55, letterSpacing: '0.08em', textTransform: 'none', marginTop: '4px' }}>
+                Submit an alert to populate.
+              </span>
+            </div>
           </div>
         )}
 
         {result && !primaryIP && (
-          <div className="arb-section">
-            <div className="arb-card-label">NOTE</div>
-            <div className="arb-note-text">No public IPs detected. Enrichment unavailable.</div>
+          <div className="arb-empty">
+            <svg viewBox="-8 0 136 120" width="32" height="28" xmlns="http://www.w3.org/2000/svg">
+              <line x1="60" y1="8" x2="6" y2="112" stroke="rgba(255,255,255,0.20)" strokeWidth="17" strokeLinecap="square"/>
+              <line x1="60" y1="8" x2="114" y2="112" stroke="rgba(255,255,255,0.20)" strokeWidth="17" strokeLinecap="square"/>
+              <line x1="-6" y1="68" x2="126" y2="68" stroke="rgba(255,255,255,0.20)" strokeWidth="7" strokeLinecap="square"/>
+            </svg>
+            <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.15em', textAlign: 'center', lineHeight: '2.0', textTransform: 'uppercase' }}>
+              NO IPs DETECTED
+              <span style={{ display: 'block', fontSize: '9px', opacity: 0.55, letterSpacing: '0.08em', textTransform: 'none', marginTop: '4px' }}>
+                No public IPs were found in this log. Enrichment is unavailable.
+              </span>
+            </div>
           </div>
         )}
 
         {result && primaryIP && (
           <>
             <div className="arb-section">
-              <div className="arb-card-label">Source IP</div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-                <div className="arb-ip-address" style={{ margin: 0 }}>{primaryIP}</div>
-                <DefangButton ip={primaryIP} />
-                <button
-                onClick={() => onIpFilter?.(primaryIP)}
-                style={{ background: 'none', border: '0.5px solid rgba(100,149,237,0.4)', borderRadius: '2px', color: 'cornflowerblue', fontFamily: 'var(--font-mono), monospace', fontSize: '7px', letterSpacing: '0.08em', cursor: 'pointer', padding: '2px 5px' }}
-              >
-                PIVOT
-              </button>
+              <div className="arb-card-label" style={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em' }}>SOURCE IP</div>
+              <div style={{ marginBottom: '8px' }}>
+                <div className="arb-ip-address" style={{ margin: '0 0 6px 0' }}>{primaryIP}</div>
+                <div style={{ display: 'flex', gap: '6px', marginBottom: '2px' }}>
+                  <DefangButton ip={primaryIP} />
+                  <button
+                    onClick={() => onIpFilter?.(primaryIP)}
+                    style={{ background: 'none', border: '0.5px solid rgba(100,149,237,0.5)', borderRadius: '2px', color: 'rgba(100,149,237,1)', fontFamily: 'var(--font-mono), monospace', fontSize: '8px', letterSpacing: '0.08em', cursor: 'pointer', padding: '3px 10px', transition: 'all 0.15s', fontWeight: '500' }}
+                    onMouseEnter={e => { e.currentTarget.style.background = 'rgba(100,149,237,0.12)'; e.currentTarget.style.borderColor = 'rgba(100,149,237,0.8)' }}
+                    onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.borderColor = 'rgba(100,149,237,0.5)' }}
+                  >
+                    PIVOT
+                  </button>
+                </div>
               </div>
 
-              <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap', marginBottom: '4px' }}>
-                {isFirstSeen && <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', border: '0.5px solid var(--border-bright)', borderRadius: '2px', padding: '2px 6px', letterSpacing: '0.08em' }}>FIRST SEEN</span>}
-                {isVolumetric && <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: '#E57373', background: 'rgba(229,115,115,0.1)', border: '0.5px solid rgba(229,115,115,0.3)', borderRadius: '2px', padding: '2px 6px', letterSpacing: '0.08em' }}>VOLUMETRIC</span>}
-                {isPersistent && !isVolumetric && <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: '#F59E0B', background: 'rgba(245,158,11,0.1)', border: '0.5px solid rgba(245,158,11,0.3)', borderRadius: '2px', padding: '2px 6px', letterSpacing: '0.08em' }}>PERSISTENT THREAT</span>}
-              </div>
+              {(isFirstSeen || isVolumetric || (isPersistent && !isVolumetric)) && (
+                <div style={{ marginBottom: '6px' }}>
+                  <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.12em', marginBottom: '4px' }}>SESSION CORRELATION</div>
+                  <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                    {isFirstSeen && <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'rgba(16,185,129,0.7)', background: 'rgba(16,185,129,0.08)', border: '0.5px solid rgba(16,185,129,0.3)', borderRadius: '2px', padding: '2px 6px', letterSpacing: '0.08em' }}>FIRST SEEN THIS SESSION</span>}
+                    {isVolumetric && <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: '#E57373', background: 'rgba(229,115,115,0.1)', border: '0.5px solid rgba(229,115,115,0.3)', borderRadius: '2px', padding: '2px 6px', letterSpacing: '0.08em' }}>VOLUMETRIC</span>}
+                    {isPersistent && !isVolumetric && <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: '#F59E0B', background: 'rgba(245,158,11,0.1)', border: '0.5px solid rgba(245,158,11,0.3)', borderRadius: '2px', padding: '2px 6px', letterSpacing: '0.08em' }}>PERSISTENT THREAT</span>}
+                  </div>
+                </div>
+              )}
 
               {cached && cached.seenCount > 1 && (
                 <div style={{ display: 'inline-flex', alignItems: 'center', gap: '5px', marginBottom: '6px', background: 'rgba(245,158,11,0.15)', border: '0.5px solid var(--amber-40)', borderRadius: '3px', padding: '3px 8px' }}>
@@ -132,7 +161,7 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
 
             {abuse && (
               <div className="arb-section">
-                <div className="arb-card-label">AbuseIPDB Score</div>
+                <div className="arb-card-label" style={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em' }}>ABUSEIPDB SCORE</div>
                 <div className="arb-score-header">
                   <div><span className="arb-score-num">{abuse.score}</span><span className="arb-score-denom"> /100</span></div>
                   <span className={`arb-badge ${abuse.score >= 80 ? 'arb-critical' : abuse.score >= 40 ? 'arb-high' : 'arb-low'}`}>{abuse.score >= 80 ? 'MALICIOUS' : abuse.score >= 40 ? 'SUSPICIOUS' : 'CLEAN'}</span>
@@ -144,7 +173,7 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
 
             {vt && (
               <div className="arb-section">
-                <div className="arb-card-label">VirusTotal</div>
+                <div className="arb-card-label" style={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em' }}>VIRUSTOTAL</div>
                 <div className="arb-vt-row">
                   <div><span className="arb-vt-count">{vt.malicious}</span><span className="arb-vt-denom"> / {vt.total} engines</span></div>
                   <span className={`arb-badge ${vt.malicious > 0 ? 'arb-high' : 'arb-low'}`}>{vt.malicious > 0 ? 'FLAGGED' : 'CLEAN'}</span>
@@ -156,7 +185,7 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
 
             {otx && (
               <div className="arb-section">
-                <div className="arb-card-label">AlienVault OTX</div>
+                <div className="arb-card-label" style={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em' }}>ALIENVAULT OTX</div>
                 <div className="arb-meta-row" style={{ marginBottom: '10px' }}>
                   <span className="arb-mk">PULSE COUNT</span>
                   <span className={`arb-mv ${otx.pulseCount > 0 ? 'arb-mv-bad' : ''}`}>{otx.pulseCount} PULSES</span>
@@ -168,22 +197,68 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
               </div>
             )}
 
-            {ips.length > 1 && (
+            {sortedIPs.length > 1 && (
               <div className="arb-section">
-                <div className="arb-card-label">Additional IPs</div>
-                {ips.slice(1).map((ip, i) => (
-                  <div key={i} className="arb-meta-row">
-                    <span className="arb-mk">{ip}</span>
-                    <span className="arb-mv">{enrichment[ip]?.abuseipdb?.score != null ? `${enrichment[ip].abuseipdb.score}/100` : '—'}</span>
-                  </div>
-                ))}
+                <div className="arb-card-label" style={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em' }}>ADDITIONAL IPs</div>
+                {sortedIPs.slice(1).map((ip, i) => {
+                  const score = enrichment?.[ip]?.abuseipdb?.score
+                  const isCritical = score != null && score >= 80
+                  const isSuspicious = score != null && score >= 40 && score < 80
+                  return (
+                    <div key={i} style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: (isCritical || isSuspicious) ? '6px 8px' : '3px 0',
+                      marginBottom: (isCritical || isSuspicious) ? '6px' : '2px',
+                      background: isCritical ? 'rgba(239,68,68,0.06)' : isSuspicious ? 'rgba(245,158,11,0.04)' : 'transparent',
+                      border: isCritical ? '0.5px solid rgba(239,68,68,0.25)' : isSuspicious ? '0.5px solid rgba(245,158,11,0.2)' : 'none',
+                      borderRadius: (isCritical || isSuspicious) ? '3px' : '0',
+                      cursor: (isCritical || isSuspicious) ? 'pointer' : 'default',
+                    }}
+                    onClick={() => { if(isCritical || isSuspicious) onIpFilter?.(ip) }}
+                    onMouseEnter={e => { if(isCritical || isSuspicious) e.currentTarget.style.background = isCritical ? 'rgba(239,68,68,0.10)' : 'rgba(245,158,11,0.08)' }}
+                    onMouseLeave={e => { if(isCritical || isSuspicious) e.currentTarget.style.background = isCritical ? 'rgba(239,68,68,0.06)' : 'rgba(245,158,11,0.04)' }}
+                    >
+                      <span style={{
+                        fontFamily: 'var(--font-mono), monospace',
+                        fontSize: '9px',
+                        color: isCritical ? 'var(--red)' : isSuspicious ? 'var(--amber)' : 'var(--text-muted)'
+                      }}>{ip}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        {isCritical && (
+                          <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--red)', background: 'rgba(239,68,68,0.12)', border: '0.5px solid rgba(239,68,68,0.4)', borderRadius: '2px', padding: '1px 5px', letterSpacing: '0.08em' }}>
+                            MALICIOUS
+                          </span>
+                        )}
+                        {isSuspicious && !isCritical && (
+                          <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--amber)', background: 'rgba(245,158,11,0.1)', border: '0.5px solid rgba(245,158,11,0.3)', borderRadius: '2px', padding: '1px 5px', letterSpacing: '0.08em' }}>
+                            SUSPICIOUS
+                          </span>
+                        )}
+                        {(isCritical || isSuspicious) && (
+                          <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'rgba(100,149,237,0.7)', letterSpacing: '0.06em' }}>
+                            PIVOT ↗
+                          </span>
+                        )}
+                        <span style={{
+                          fontFamily: 'var(--font-mono), monospace',
+                          fontSize: '9px',
+                          color: isCritical ? 'var(--red)' : isSuspicious ? 'var(--amber)' : 'var(--text-secondary)'
+                        }}>
+                          {score != null ? `${score}/100` : '—'}
+                        </span>
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             )}
 
             {correlation?.hits?.length > 0 && (
-              <div className="arb-section" style={{ borderTop: '0.5px solid var(--border)', paddingTop: '12px' }}>
+              <div className="arb-section" style={{ borderTop: '0.5px solid rgba(245,158,11,0.15)', paddingTop: '12px' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <div className="arb-card-label" style={{ color: '#E57373', marginBottom: 0 }}>ARBITER MEMORY</div>
+                  <div className="arb-card-label" style={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em', marginBottom: 0, fontSize: '9px' }}>ARBITER MEMORY</div>
                   {result?.meta?.activeCampaign && <span style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', background: '#E57373', color: '#080C14', borderRadius: '2px', padding: '2px 6px', letterSpacing: '0.1em' }}>ACTIVE CAMPAIGN</span>}
                 </div>
                 {(() => {
@@ -198,7 +273,8 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
                 })()}
                 {correlation.hits.map((h, i) => {
                   const age = Math.round((Date.now() - h.timestamp) / 60000)
-                  const indicator = h.key?.startsWith('ip:') ? `IP ${h.key.slice(3)}` : `User ${h.key?.slice(5)}`
+                  const rawKey = h.key?.split(':').slice(2).join(':') ?? ''
+                  const indicator = rawKey.startsWith('ip:') ? `IP ${rawKey.slice(3)}` : `User ${rawKey.slice(5)}`
                   return (
                     <div key={i} style={{ marginBottom: '10px', paddingBottom: '10px', borderBottom: i < correlation.hits.length - 1 ? '0.5px solid var(--border)' : 'none' }}>
                       <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '9px', color: '#E57373', marginBottom: '4px' }}>{indicator}</div>
@@ -224,23 +300,37 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
 
             {correlation?.hits?.length > 0 && (() => {
               const allCases = correlation.hits.flatMap(h =>
-                (h.cases ?? []).map(caseId => ({ caseId, severity: h.severity, indicator: h.key?.startsWith('ip:') ? h.key.slice(3) : h.key?.slice(5) }))
+                (h.cases ?? []).map(caseId => ({ caseId, severity: h.severity, indicator: (() => {
+                  const rawKey = h.key?.split(':').slice(2).join(':') ?? ''
+                  return rawKey.startsWith('ip:') ? rawKey.slice(3) : rawKey.slice(5)
+                })() }))
               ).slice(0, 8)
               if (!allCases.length) return null
               return (
-                <div className="arb-section" style={{ borderTop: '0.5px solid var(--border)', paddingTop: '12px' }}>
-                  <div className="arb-card-label" style={{ marginBottom: '8px' }}>CAMPAIGN TIMELINE</div>
+                <div className="arb-section" style={{ borderTop: '0.5px solid rgba(245,158,11,0.15)', paddingTop: '12px' }}>
+                  <div className="arb-card-label" style={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em', marginBottom: '8px', fontSize: '9px' }}>CAMPAIGN TIMELINE</div>
                   {allCases.map((c, i) => (
-                    <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', marginBottom: '6px' }}>
+                    <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', marginBottom: '6px', overflow: 'hidden' }}>
                       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', flexShrink: 0 }}>
                         <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: c.severity === 'CRITICAL' ? 'var(--red)' : c.severity === 'HIGH' ? 'var(--amber)' : 'var(--text-muted)', marginTop: '2px' }} />
                         {i < allCases.length - 1 && <div style={{ width: '1px', height: '14px', background: 'var(--border-bright)' }} />}
                       </div>
                       <div style={{ flex: 1 }}>
-                        <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '8px', color: 'var(--text-secondary)' }}>{c.caseId.slice(4, 17)}</div>
-                        <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)' }}>{c.indicator}</div>
+                        <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '8px', color: 'var(--text-secondary)' }}>
+                          {(() => {
+                            const ts = parseInt(c.caseId.replace('ARB-',''))
+                            if(!isNaN(ts)) {
+                              const d = new Date(ts)
+                              return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                            }
+                            return c.caseId.slice(4, 17)
+                          })()}
+                        </div>
+                        <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '8px', color: 'var(--text-secondary)' }}>
+                          {c.indicator.includes('.') ? `IP ${c.indicator}` : `User ${c.indicator}`}
+                        </div>
                       </div>
-                      <span className={`arb-badge arb-${c.severity?.toLowerCase()}`} style={{ fontSize: '7px' }}>{c.severity}</span>
+                      <span className={`arb-badge arb-${c.severity?.toLowerCase()}`} style={{ fontSize: '7px', flexShrink: 0, whiteSpace: 'nowrap' }}>{c.severity}</span>
                     </div>
                   ))}
                 </div>

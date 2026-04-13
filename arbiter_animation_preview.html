@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ARBITER — Animation Concept Preview</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    html, body {
+      min-height: 100vh;
+      background: #080c14;
+      font-family: 'JetBrains Mono', 'Courier New', monospace;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 52px 36px 72px;
+    }
+
+    .page-title {
+      font-size: 9px;
+      letter-spacing: 0.22em;
+      color: rgba(255,255,255,0.16);
+      margin-bottom: 56px;
+      text-transform: uppercase;
+    }
+
+    .concepts {
+      display: flex;
+      gap: 32px;
+      width: 100%;
+      max-width: 1200px;
+      align-items: flex-start;
+    }
+
+    .concept {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 11px;
+    }
+
+    .concept-label {
+      font-size: 8px;
+      letter-spacing: 0.2em;
+      color: rgba(245,158,11,0.5);
+      text-transform: uppercase;
+    }
+
+    .panel-wrap {
+      position: relative;
+      width: 100%;
+      padding-bottom: 65%;
+    }
+
+    canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      border: 1px solid rgba(255,255,255,0.07);
+      border-radius: 3px;
+      background: #08090f;
+      cursor: pointer;
+      transition: border-color 0.3s ease;
+    }
+
+    canvas.active {
+      border-color: rgba(245,158,11,0.42);
+      cursor: text;
+    }
+
+    .concept-desc {
+      font-size: 9px;
+      color: rgba(255,255,255,0.18);
+      letter-spacing: 0.04em;
+      line-height: 1.7;
+    }
+
+    .page-note {
+      margin-top: 56px;
+      font-size: 8px;
+      color: rgba(255,255,255,0.13);
+      letter-spacing: 0.07em;
+      text-align: center;
+      line-height: 2.1;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="page-title">ARBITER — INPUT PANEL ANIMATION PROTOTYPE</div>
+
+  <div class="concepts">
+
+    <div class="concept">
+      <div class="concept-label">CONCEPT G — PULSE MONITOR</div>
+      <div class="panel-wrap">
+        <canvas id="canvasG"></canvas>
+      </div>
+      <div class="concept-desc">Passive surveillance — system monitors continuously, waiting</div>
+    </div>
+
+    <div class="concept">
+      <div class="concept-label">CONCEPT K — THREAT SCANNER</div>
+      <div class="panel-wrap">
+        <canvas id="canvasK"></canvas>
+      </div>
+      <div class="concept-desc">Active scan — system searches until a real target is found</div>
+    </div>
+
+  </div>
+
+  <div class="page-note">
+    Click either panel to see the interaction state.<br>
+    Refresh to reset. This prototype is for visual comparison only.
+  </div>
+
+<script>
+// ══════════════════════════════════════════════════════════════════════════════
+// CONCEPT G — PULSE MONITOR
+// Three oscilloscope waveform lines scrolling left. Organic variation from
+// three superimposed sines per channel. Random spikes simulate traffic bursts.
+// Click: accelerate 0.5s → fade out → clean input state.
+// ══════════════════════════════════════════════════════════════════════════════
+;(function ConceptG() {
+
+  const canvas = document.getElementById('canvasG');
+  const ctx    = canvas.getContext('2d');
+
+  let W = 1, H = 1, dpr = 1;
+  let t = 0;               // global time accumulator (seconds)
+  let alive = true;        // animation running flag
+
+  // Interaction states
+  let clicked       = false;
+  let accelActive   = false;
+  let accelStart    = 0;
+  const ACCEL_DUR   = 500;  // ms
+
+  let fadeActive    = false;
+  let fadeStart     = 0;
+  const FADE_DUR    = 420;  // ms
+  let fadeOpacity   = 1.0;
+
+  // Three waveform channels
+  // f1/f2/f3: spatial frequencies (rad/px) — three sines summed per channel
+  // a1/a2/a3: amplitudes (px)
+  // s1/s2/s3: temporal speeds (rad/s) — control scroll velocity
+  // yR: vertical centre as fraction of H
+  // op: base draw opacity
+  // lw: line width
+  const WAVES = [
+    { yR:0.28, a1:22, a2:10, a3:5, f1:0.0155, f2:0.0082, f3:0.0031, s1:1.5, s2:0.9,  s3:0.35, op:0.28, lw:1.3 },
+    { yR:0.52, a1:15, a2: 7, a3:3, f1:0.0120, f2:0.0110, f3:0.0041, s1:1.0, s2:1.25, s3:0.22, op:0.17, lw:1.0 },
+    { yR:0.74, a1:11, a2: 5, a3:2, f1:0.0195, f2:0.0064, f3:0.0052, s1:1.8, s2:0.7,  s3:0.45, op:0.10, lw:0.8 },
+  ];
+
+  // Spike pool
+  // Each spike: { waveIdx, xFrac, peakAmp, sigma, life [0→1], decayRate }
+  const spikes      = [];
+  let   nextSpike   = 0;   // timestamp when next spike is allowed (ms)
+
+  // ── helpers ───────────────────────────────────────────────────────────────
+
+  function resize() {
+    const r = canvas.getBoundingClientRect();
+    dpr = window.devicePixelRatio || 1;
+    W   = r.width;
+    H   = r.height;
+    canvas.width  = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // y value of channel `w` at horizontal pixel `x`, scaled by speedMult
+  function waveY(w, x, sm) {
+    const tS = t * sm;
+    return w.yR * H
+      + Math.sin(x * w.f1 + tS * w.s1) * w.a1
+      + Math.sin(x * w.f2 + tS * w.s2) * w.a2
+      + Math.sin(x * w.f3 + tS * w.s3) * w.a3;
+  }
+
+  // Cumulative spike displacement at pixel x for channel waveIdx
+  function spikeAt(x, wIdx) {
+    let sum = 0;
+    for (const sp of spikes) {
+      if (sp.waveIdx !== wIdx) continue;
+      const sx  = sp.xFrac * W;
+      const sig = sp.sigma * W;
+      const env = Math.sin(sp.life * Math.PI); // bell 0→1→0
+      sum -= sp.peakAmp * Math.exp(-((x - sx) ** 2) / (2 * sig * sig)) * env;
+    }
+    return sum;
+  }
+
+  function maybeSpawn(now) {
+    if (clicked || now < nextSpike) return;
+    nextSpike = now + 1800 + Math.random() * 3200;
+    spikes.push({
+      waveIdx:  Math.floor(Math.random() * WAVES.length),
+      xFrac:    0.35 + Math.random() * 0.60,
+      peakAmp:  28 + Math.random() * 38,
+      sigma:    0.018 + Math.random() * 0.018,
+      life:     0,
+      decayRate:0.010 + Math.random() * 0.008,
+    });
+  }
+
+  function drawWaves(speedMult, alpha) {
+    WAVES.forEach((w, wi) => {
+      // Glow halo — same path drawn wide and blurred
+      ctx.save();
+      ctx.globalAlpha = alpha * w.op * 0.55;
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth   = w.lw + 3;
+      ctx.shadowBlur  = 10;
+      ctx.shadowColor = 'rgba(245,158,11,0.45)';
+      ctx.beginPath();
+      for (let x = 0; x <= W; x += 2) {
+        const y = waveY(w, x, speedMult) + spikeAt(x, wi);
+        x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // Crisp line on top
+      ctx.save();
+      ctx.globalAlpha = alpha * w.op;
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth   = w.lw;
+      ctx.beginPath();
+      for (let x = 0; x <= W; x += 1) {
+        const y = waveY(w, x, speedMult) + spikeAt(x, wi);
+        x === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+    });
+  }
+
+  function drawPlaceholder(alpha) {
+    ctx.save();
+    ctx.globalAlpha  = alpha;
+    ctx.fillStyle    = 'rgba(255,255,255,1)';
+    ctx.font         = '12px "JetBrains Mono", monospace';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('— paste your alert here —', W * 0.5, H * 0.5);
+    ctx.restore();
+  }
+
+  // ── main loop ─────────────────────────────────────────────────────────────
+
+  let lastTs = null;
+
+  function frame(ts) {
+    if (!alive) return;
+    if (!lastTs) lastTs = ts;
+    const dt = Math.min(ts - lastTs, 50) / 1000; // seconds, capped
+    lastTs = ts;
+
+    let speedMult = 1.0;
+
+    if (accelActive) {
+      const elapsed = ts - accelStart;
+      if (elapsed < ACCEL_DUR) {
+        speedMult = 1 + (elapsed / ACCEL_DUR) * 4.0; // 1× → 5×
+      } else {
+        accelActive = false;
+        fadeActive  = true;
+        fadeStart   = ts;
+      }
+    }
+
+    if (fadeActive) {
+      fadeOpacity = Math.max(0, 1 - (ts - fadeStart) / FADE_DUR);
+      if (fadeOpacity <= 0) {
+        alive = false;
+        ctx.clearRect(0, 0, W, H);
+        drawPlaceholder(0.20);
+        return;
+      }
+    }
+
+    t += dt * speedMult;
+
+    // Advance spike life; prune dead ones
+    for (let i = spikes.length - 1; i >= 0; i--) {
+      spikes[i].life += spikes[i].decayRate * speedMult;
+      if (spikes[i].life >= 1) spikes.splice(i, 1);
+    }
+
+    maybeSpawn(ts);
+
+    ctx.clearRect(0, 0, W, H);
+    // Placeholder fades in slightly as waves fade out
+    drawPlaceholder(0.20 + (1 - fadeOpacity) * 0.05);
+    drawWaves(speedMult, fadeOpacity);
+
+    requestAnimationFrame(frame);
+  }
+
+  // ── wiring ────────────────────────────────────────────────────────────────
+
+  canvas.addEventListener('click', () => {
+    if (clicked) return;
+    clicked     = true;
+    accelActive = true;
+    accelStart  = performance.now();
+    canvas.classList.add('active');
+  });
+
+  window.addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(frame);
+
+})();
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// CONCEPT K — THREAT SCANNER
+// Amber scan line sweeps top→bottom. Fragments from threat-intel vocabulary
+// appear around the scan zone and vanish as the line moves past.
+// Hard reset (no easing) at bottom. Click: fade out in 0.3s → clean state.
+// ══════════════════════════════════════════════════════════════════════════════
+;(function ConceptK() {
+
+  const canvas = document.getElementById('canvasK');
+  const ctx    = canvas.getContext('2d');
+
+  let W = 1, H = 1, dpr = 1;
+  let scanY  = 0;
+  let alive  = true;
+
+  let clicked      = false;
+  let fadingOut    = false;
+  let fadeOutStart = 0;
+  const FADE_DUR   = 300; // ms
+  let   scanOpacity= 1.0;
+
+  const SWEEP_MS = 3500; // one full top→bottom pass
+
+  // Fragment vocabulary
+  const VOCAB = [
+    'EventCode=4625 · LogonType=3',
+    'IpAddress=185.220.101.47',
+    'TargetUserName=admin · FailureReason=%%2313',
+    'ACS_AUTH_FAILURE_HIGH · T1110 · BRUTE_FORCE',
+    '{"eventName":"AttachUserPolicy","errorCode":null}',
+    'action=attachuserpolicy · user=analyst',
+    'event_outcome=success · vendor_origin=cloudtrail',
+    'Apr 10 09:17:14 prod-server sshd[12891]: Failed password',
+    'CORRELATED_INDICATOR_ACTIVITY · CRITICAL · 3 SIGNALS',
+    'normalization_score=0.82 · parse_quality=structured',
+    'T1110.001 · Password Spraying',
+    'ENRICHMENT_CONFIRMED_MALICIOUS',
+    'ACS_CLOUD_PRIVILEGE_ESCALATION',
+    'src_ip=10.0.4.22 · event_outcome=failure',
+    'vendor_origin=windows · EventCode=4688',
+    'ACS_BASE64_EXECUTION · T1027',
+    'LSASS_DUMP_RUNDLL32 · T1003.001',
+    'MIMIKATZ_DETECTED · sekurlsa::logonpasswords',
+  ];
+
+  // Slots: one fragment per vertical zone, rebuilt each sweep
+  let slots = [];
+
+  function buildSlots() {
+    const count  = 15;
+    const zoneH  = H / count;
+    const used   = new Set();
+    slots = [];
+    for (let i = 0; i < count; i++) {
+      let fi;
+      let attempts = 0;
+      do { fi = Math.floor(Math.random() * VOCAB.length); attempts++; }
+      while (used.has(fi) && attempts < 30);
+      used.add(fi);
+      const text  = VOCAB[fi];
+      const textW = text.length * 6.5; // approx 11px mono char width
+      const maxX  = Math.max(18, W - textW - 18);
+      slots.push({
+        text,
+        y: (i + 0.5) * zoneH,
+        x: 18 + Math.random() * maxX,
+      });
+    }
+  }
+
+  function resize() {
+    const r = canvas.getBoundingClientRect();
+    dpr = window.devicePixelRatio || 1;
+    W   = r.width;
+    H   = r.height;
+    canvas.width  = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    buildSlots();
+  }
+
+  // ── draw helpers ──────────────────────────────────────────────────────────
+
+  function drawPlaceholder(alpha) {
+    ctx.save();
+    ctx.globalAlpha  = alpha;
+    ctx.fillStyle    = 'rgba(255,255,255,1)';
+    ctx.font         = '12px "JetBrains Mono", monospace';
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('— paste your alert here —', W * 0.5, H * 0.5);
+    ctx.restore();
+  }
+
+  function drawScanLine(sy, alpha) {
+    ctx.save();
+
+    // Trailing gradient above the scan line
+    const trailH = Math.min(60, sy);
+    if (trailH > 1) {
+      const grad = ctx.createLinearGradient(0, sy - trailH, 0, sy);
+      grad.addColorStop(0, 'rgba(245,158,11,0)');
+      grad.addColorStop(1, `rgba(245,158,11,${0.07 * alpha})`);
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, sy - trailH, W, trailH);
+    }
+
+    // Bloom bloom below the line
+    const bloom = ctx.createLinearGradient(0, sy, 0, sy + 7);
+    bloom.addColorStop(0, `rgba(245,158,11,${0.13 * alpha})`);
+    bloom.addColorStop(1, 'rgba(245,158,11,0)');
+    ctx.fillStyle = bloom;
+    ctx.fillRect(0, sy, W, 7);
+
+    // The scan line itself
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth   = 1.5;
+    ctx.shadowBlur  = 12;
+    ctx.shadowColor = 'rgba(245,158,11,0.9)';
+    ctx.beginPath();
+    ctx.moveTo(0, sy);
+    ctx.lineTo(W, sy);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function drawFragments(sy, alpha) {
+    // Fragment appears as scan approaches (from above) and fades after passing
+    const FADE_IN  = 22;  // px before scan reaches slot.y
+    const FADE_OUT = 32;  // px after scan passes slot.y
+
+    ctx.save();
+    ctx.font         = '11px "JetBrains Mono", monospace';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle    = '#f59e0b';
+
+    for (const slot of slots) {
+      const dist = sy - slot.y; // negative = scan not yet reached, positive = passed
+      let opacity = 0;
+
+      if (dist >= -FADE_IN && dist < 0) {
+        // Approaching: fade in linearly
+        opacity = ((dist + FADE_IN) / FADE_IN) * 0.38;
+      } else if (dist >= 0 && dist <= FADE_OUT) {
+        // Receding: fade out
+        opacity = (1 - dist / FADE_OUT) * 0.30;
+      }
+
+      if (opacity > 0.004) {
+        ctx.globalAlpha = opacity * alpha;
+        ctx.fillText(slot.text, slot.x, slot.y);
+      }
+    }
+
+    ctx.restore();
+  }
+
+  // ── main loop ─────────────────────────────────────────────────────────────
+
+  let lastTs = null;
+
+  function frame(ts) {
+    if (!alive) return;
+    if (!lastTs) lastTs = ts;
+    const dt = Math.min(ts - lastTs, 50);
+    lastTs = ts;
+
+    if (fadingOut) {
+      scanOpacity = Math.max(0, 1 - (ts - fadeOutStart) / FADE_DUR);
+      if (scanOpacity <= 0) {
+        alive = false;
+        ctx.clearRect(0, 0, W, H);
+        drawPlaceholder(0.15);
+        return;
+      }
+    } else {
+      // Advance scan line
+      scanY += (H / SWEEP_MS) * dt;
+      if (scanY >= H) {
+        scanY = 0;          // hard reset — no easing
+        buildSlots();       // fresh fragment layout each sweep
+      }
+    }
+
+    ctx.clearRect(0, 0, W, H);
+    drawPlaceholder(0.15);
+    drawScanLine(scanY, scanOpacity);
+    drawFragments(scanY, scanOpacity);
+
+    requestAnimationFrame(frame);
+  }
+
+  // ── wiring ────────────────────────────────────────────────────────────────
+
+  canvas.addEventListener('click', () => {
+    if (clicked) return;
+    clicked      = true;
+    fadingOut    = true;
+    fadeOutStart = performance.now();
+    canvas.classList.add('active');
+  });
+
+  window.addEventListener('resize', resize);
+  resize();
+  requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>

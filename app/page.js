@@ -8,6 +8,7 @@ import IntelPanel from './components/IntelPanel'
 export default function Home() {
   const [alertText, setAlertText]           = useState('')
   const [result, setResult]                 = useState(null)
+  const [displayedResult, setDisplayedResult] = useState(null)
   const [loading, setLoading]               = useState(false)
   const [loadingPhase, setLoadingPhase]     = useState('') // 'enriching' | 'analyzing'
   const [error, setError]                   = useState(null)
@@ -59,6 +60,7 @@ export default function Home() {
   function handleReset() {
     setAlertText('')
     setResult(null)
+    setDisplayedResult(null)
     setError(null)
     setActiveId(null)
     setStreamedEnrichment(null)
@@ -75,6 +77,7 @@ export default function Home() {
   function handleClearHistory() {
     setHistory([])
     setResult(null)
+    setDisplayedResult(null)
     setAlertText('')
     setActiveId(null)
     setStreamedEnrichment(null)
@@ -86,6 +89,7 @@ export default function Home() {
   function handleSelectHistory(item) {
     setActiveId(item.id)
     setResult(item.fullResult)
+    setDisplayedResult(item.fullResult)
     setAlertText(item.alertText)
     setError(null)
     setStreamedEnrichment(null)
@@ -98,6 +102,7 @@ export default function Home() {
     setLoading(true)
     setError(null)
     setResult(null)
+    setDisplayedResult(null)
     setActiveId(newId)
     setStreamedEnrichment(null)
     setStreamedIPs([])
@@ -160,6 +165,7 @@ export default function Home() {
           if (event === 'triage') {
             const data = payload
             setResult(data)
+            setDisplayedResult(data)
             if (data.ips?.length) {
   setIndicatorCache(prev => {
     const updated = { ...prev }
@@ -264,8 +270,8 @@ export default function Home() {
         <AnalysisPanel
           alertText={alertText}
           setAlertText={setAlertText}
-          result={result}
-          loading={loading}
+          result={displayedResult}
+          loading={loading && !displayedResult}
           loadingPhase={loadingPhase}
           error={error}
           onTriage={handleTriage}

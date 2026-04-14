@@ -249,6 +249,10 @@ function parseAlert(text) {
     fileHash:      get(['MD5','SHA1','SHA256','Hashes'], /(?:MD5|SHA1|SHA256|Hashes)[=:\s]+([a-fA-F0-9]{32,64})/i),
     parentProcess: get(['ParentProcessName','ParentImage'], /(?:Parent Process Name|ParentProcessName|ParentImage)[=:\s]+(.+?)(?:\r?\n|$)/i),
     serviceName:   get(['ServiceName'], /ServiceName[=:\s]+(\S+)/i),
+    serviceFileName: get(
+      ['ServiceFileName', 'ImagePath'],
+      /(?:ServiceFileName|ImagePath)[=:\s]+(.+?)(?:\r?\n|$)/i
+    ),
     taskName:      get(['TaskName'], /TaskName[=:\s]+(.+?)(?:\r?\n|$)/i),
     taskContent:   get(['TaskContent'], /TaskContent[=:\s]+(.+?)(?:\r?\n|$)/i),
     objectName:    get(['ObjectName','TargetObject'], /(?:ObjectName|TargetObject)[=:\s]+(.+?)(?:\r?\n|$)/i),
@@ -387,7 +391,7 @@ function checkIndependencePairDirect(fieldA, fieldB) {
  *
  * This constraint is tracked as Issue 10.3 in the architectural map.
  */
-function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
+function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null, internalFailureHits = null) {
   const signals = []
 
   const asset = (acsObject?.acs_data?.host?.value ?? parsed.asset ?? '').toUpperCase()
@@ -431,7 +435,7 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
   if (procName.includes('certutil')
       && /-urlcache|-split|-f\s/i.test(cmdLine)
       && checkIndependencePair(acsObject?.acs_data, 'command_line', 'process_name')) {
-    signals.push({ rule: 'LOLBIN_CERTUTIL_DOWNLOAD', classification: 'Malicious File Download via LOLBin', label: 'certutil used as download cradle', severity: 'HIGH', confidence: 92, weight: 5, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1105', explanation_weight: 'medium', confidence_boost: 10 })
+    signals.push({ rule: 'LOLBIN_CERTUTIL_DOWNLOAD', classification: 'Malicious File Download via LOLBin', label: 'certutil used as download cradle', severity: 'HIGH', confidence: 92, weight: 5, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1105', explanation_weight: 'medium', confidence_boost: 10, independence_pair: ['command_line', 'process_name'] })
   }
 
   // CERTUTIL suspicious path — independent of download flags
@@ -440,13 +444,15 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
   if (procName.includes('certutil')
       && /users\\public|windows\\temp|programdata/i.test(cmdLine)
       && checkIndependencePair(acsObject?.acs_data, 'command_line', 'process_name')) {
-    signals.push({ rule: 'LOLBIN_CERTUTIL_SUSPICIOUS_PATH', classification: 'LOLBin Staging to Suspicious Path', label: 'certutil writing to suspicious path', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1105', explanation_weight: 'high', confidence_boost: 15 })
+    signals.push({ rule: 'LOLBIN_CERTUTIL_SUSPICIOUS_PATH', classification: 'LOLBin Staging to Suspicious Path', label: 'certutil writing to suspicious path', severity: 'CRITICAL', confidence: 95, weight: 5, evidence: [`CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1105', explanation_weight: 'high', confidence_boost: 15, independence_pair: ['command_line', 'process_name'] })
   }
 
-  if (procName.includes('mshta') && /http[s]?:\/\//i.test(cmdLine))
-    signals.push({ rule: 'LOLBIN_MSHTA_REMOTE', classification: 'Remote Script Execution via mshta', label: 'mshta executing remote content', severity: 'HIGH', confidence: 90, weight: 5, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1218.005', explanation_weight: 'medium', confidence_boost: 10 })
+  if (procName.includes('mshta')
+      && /http[s]?:\/\//i.test(cmdLine)
+      && checkIndependencePair(acsObject?.acs_data, 'command_line', 'process_name'))
+    signals.push({ rule: 'LOLBIN_MSHTA_REMOTE', classification: 'Remote Script Execution via mshta', label: 'mshta executing remote content', severity: 'HIGH', confidence: 90, weight: 5, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1218.005', explanation_weight: 'medium', confidence_boost: 10, independence_pair: ['command_line', 'process_name'] })
 
-  const officeParents = ['winword.exe','excel.exe','powerpnt.exe','outlook.exe']
+  const officeParents = ['winword.exe','excel.exe','powerpnt.exe','outlook.exe','onenote.exe','mspub.exe','msaccess.exe','acrord32.exe','acrobat.exe','foxitreader.exe']
   const lolbins = ['mshta.exe','wscript.exe','cscript.exe','powershell.exe','cmd.exe','certutil.exe','regsvr32.exe','rundll32.exe']
   if (
     officeParents.some(p => parentProc.includes(p)) &&
@@ -456,8 +462,27 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
     signals.push({ rule: 'OFFICE_MACRO_DROPPER', classification: 'Macro-based Dropper Execution', label: 'Office application spawning LOLBin', severity: 'CRITICAL', confidence: 98, weight: 5, evidence: [`ParentProcess=${parentProc}`, `ProcessName=${procName}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1204.002', explanation_weight: 'high', confidence_boost: 15, independence_pair: ['parent_process', 'process_name'] })
   }
 
-  if (procName.includes('powershell') && /-enc\b|-encodedcommand/i.test(cmdLine))
-    signals.push({ rule: 'POWERSHELL_ENCODED', classification: 'Encoded PowerShell Execution', label: 'Encoded PowerShell command', severity: 'HIGH', confidence: 85, weight: 4, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1059.001', explanation_weight: 'medium', confidence_boost: 10 })
+  // BROWSER SPAWN SCRIPTING — browser process spawning scripting host or LOLBin.
+  // Threat model: drive-by compromise or malicious download execution chain.
+  // Weight 3 (not 5): browser false positive surface is non-trivial — enterprise
+  // DLP agents and some browser extensions legitimately spawn subprocesses.
+  // This keeps the signal TRACE_REQUIRED standalone while remaining eligible
+  // to compound to SURFACE_SAFE when co-firing with a weight-4 behavioral
+  // signal (e.g. POWERSHELL_ENCODED). Confidence 65 is calibrated between
+  // ACS_CLOUD_PRIVILEGE_ESCALATION_ATTEMPT (72) and ACS_LATERAL_MOVEMENT_CANDIDATE (50).
+  const browserParents = ['chrome.exe','msedge.exe','microsoftedge.exe','firefox.exe','iexplore.exe']
+  if (
+    browserParents.some(p => parentProc.includes(p)) &&
+    lolbins.some(l => procName.includes(l)) &&
+    checkIndependencePair(acsObject?.acs_data, 'parent_process', 'process_name')
+  ) {
+    signals.push({ rule: 'BROWSER_SPAWN_SCRIPTING', classification: 'Browser Process Spawning Scripting Host', label: `Browser spawned scripting process: ${parentProc.split('\\').pop()} → ${procName.split('\\').pop()}`, severity: 'HIGH', confidence: 65, weight: 3, evidence: [`ParentProcess=${parentProc}`, `ProcessName=${procName}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1189', independence_pair: ['parent_process', 'process_name'] })
+  }
+
+  if (procName.includes('powershell')
+      && /-enc\b|-encodedcommand/i.test(cmdLine)
+      && checkIndependencePair(acsObject?.acs_data, 'command_line', 'process_name'))
+    signals.push({ rule: 'POWERSHELL_ENCODED', classification: 'Encoded PowerShell Execution', label: 'Encoded PowerShell command', severity: 'HIGH', confidence: 85, weight: 4, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1059.001', explanation_weight: 'medium', confidence_boost: 10, independence_pair: ['command_line', 'process_name'] })
 
   if (eventIds.includes('4698') || eventIds.includes('4702')) {
     // task_content is now an ACS field — prefer it over legacy fallbacks
@@ -488,9 +513,21 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
   }
 
   if (eventIds.includes('4697') || eventIds.includes('7045')) {
-    const svcPath = (acsObject?.acs_data?.command_line?.value ?? parsed.commandLine ?? acsObject?.acs_data?.object_name?.value ?? parsed.objectName ?? '').toLowerCase()
-    if (/users\\public|windows\\temp|programdata|appdata/i.test(svcPath))
-      signals.push({ rule: 'SERVICE_SUSPICIOUS_PATH', classification: 'Suspicious Service Installation', label: 'Service binary in suspicious path', severity: 'CRITICAL', confidence: 93, weight: 5, evidence: [`EventCode=4697`, `ServiceName=${parsed.serviceName}`, `Path=${svcPath.slice(0,60)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1543.003', explanation_weight: 'high', confidence_boost: 15 })
+    const svcPath = (
+      acsObject?.acs_data?.service_path?.value
+      ?? parsed.serviceFileName
+      ?? acsObject?.acs_data?.command_line?.value
+      ?? parsed.commandLine
+      ?? acsObject?.acs_data?.object_name?.value
+      ?? parsed.objectName
+      ?? ''
+    ).toLowerCase()
+    if (
+      /users\\public|windows\\temp|programdata|appdata/i.test(svcPath) &&
+      checkIndependencePair(acsObject?.acs_data, 'service_name', 'service_path')
+    ) {
+      signals.push({ rule: 'SERVICE_SUSPICIOUS_PATH', classification: 'Suspicious Service Installation', label: 'Service binary in suspicious path', severity: 'CRITICAL', confidence: 93, weight: 5, evidence: [`EventCode=${eventIds.includes('7045') ? '7045' : '4697'}`, `ServiceName=${parsed.serviceName}`, `Path=${svcPath.slice(0,60)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', independence_pair: ['service_name', 'service_path'], mitre: 'T1543.003', explanation_weight: 'high', confidence_boost: 15 })
+    }
   }
 
   if (eventIds.includes('1102') || eventIds.includes('4719'))
@@ -508,21 +545,27 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
 
   if (eventIds.includes('4663') || eventIds.includes('4656')) {
     const obj = (acsObject?.acs_data?.object_name?.value ?? parsed.objectName ?? '').toLowerCase()
-    if (obj.includes('ntds.dit')) signals.push({ rule: 'NTDS_ACCESS', classification: 'Active Directory Credential Dump', label: 'ntds.dit accessed', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`EventCode=4663`, `ObjectName=${obj}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1003.003', explanation_weight: 'high', confidence_boost: 15 })
-    else if (obj.includes('sam')) signals.push({ rule: 'SAM_ACCESS', classification: 'SAM Database Access', label: 'SAM database accessed', severity: 'CRITICAL', confidence: 96, weight: 5, evidence: [`EventCode=4663`, `ObjectName=${obj}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1003.002', explanation_weight: 'high', confidence_boost: 15 })
+    if (obj.includes('ntds.dit')
+        && checkIndependencePair(acsObject?.acs_data, 'object_name', 'event_type'))
+      signals.push({ rule: 'NTDS_ACCESS', classification: 'Active Directory Credential Dump', label: 'ntds.dit accessed', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`EventCode=4663`, `ObjectName=${obj}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1003.003', explanation_weight: 'high', confidence_boost: 15, independence_pair: ['object_name', 'event_type'] })
+    else if (obj.includes('sam')
+             && checkIndependencePair(acsObject?.acs_data, 'object_name', 'event_type'))
+      signals.push({ rule: 'SAM_ACCESS', classification: 'SAM Database Access', label: 'SAM database accessed', severity: 'CRITICAL', confidence: 96, weight: 5, evidence: [`EventCode=4663`, `ObjectName=${obj}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1003.002', explanation_weight: 'high', confidence_boost: 15, independence_pair: ['object_name', 'event_type'] })
   }
 
   if (procName && cmdLine) {
     const isRundll32 = procName.includes('rundll32')
     const isLsassDump = /comsvcs|minidump|lsass/i.test(cmdLine)
     const isMimikatz = /mimikatz|sekurlsa|privilege::debug/i.test(cmdLine)
-    if (isRundll32 && isLsassDump) {
-      signals.push({ rule: 'LSASS_DUMP_RUNDLL32', classification: 'LSASS Memory Dump via LOLBin', label: 'LSASS memory dump via rundll32/comsvcs', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1003.001', explanation_weight: 'high', confidence_boost: 15 })
+    if (isRundll32
+        && isLsassDump
+        && checkIndependencePair(acsObject?.acs_data, 'command_line', 'process_name')) {
+      signals.push({ rule: 'LSASS_DUMP_RUNDLL32', classification: 'LSASS Memory Dump via LOLBin', label: 'LSASS memory dump via rundll32/comsvcs', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`ProcessName=${procName}`, `CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1003.001', explanation_weight: 'high', confidence_boost: 15, independence_pair: ['command_line', 'process_name'] })
     }
     // MIMIKATZ requires independently-sourced command_line AND process_name — prevents false
     // positives from logs where both fields are derived from the same EventID lookup table
     if (isMimikatz && checkIndependencePair(acsObject?.acs_data, 'command_line', 'process_name')) {
-      signals.push({ rule: 'MIMIKATZ_DETECTED', classification: 'Mimikatz Credential Dumping', label: 'Mimikatz credential dumping detected', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'enrichment', mitre: 'T1003.001', explanation_weight: 'high', confidence_boost: 15, independence_pair: ['command_line', 'process_name'] })
+      signals.push({ rule: 'MIMIKATZ_DETECTED', classification: 'Mimikatz Credential Dumping', label: 'Mimikatz credential dumping detected', severity: 'CRITICAL', confidence: 99, weight: 5, evidence: [`CommandLine=${cmdLine.slice(0,80)}`], category: 'behavioral', source: 'windows-eventid', signal_layer: 'behavioral', mitre: 'T1003.001', explanation_weight: 'high', confidence_boost: 15, independence_pair: ['command_line', 'process_name'] })
     }
   }
 
@@ -560,6 +603,12 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
     const priorCount = priorHits?.count ?? 0
 
     if (priorCount >= 2) {
+      // State-change behavioral signal — fires when a confirmed malicious
+      // source that has been seen before in this session (priorCount >= 2)
+      // successfully authenticates. Classified as behavioral because the
+      // detection is an observed authentication event, not a frequency
+      // pattern. The Redis precondition is a confidence threshold, not
+      // the detection mechanism.
       signals.push({
         rule: 'ACS_MALICIOUS_SOURCE_AUTH_SUCCESS',
         label: 'Successful authentication from confirmed malicious source',
@@ -572,8 +621,8 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
           `prior_hits=${priorCount}`,
           `enrichment=CONFIRMED_MALICIOUS`,
         ],
-        category: 'temporal',
-        signal_layer: 'temporal',
+        category: 'behavioral',
+        signal_layer: 'behavioral',
         frequency: false,
         mitre: 'T1078',
         independence_pair: ['event_outcome', 'src_ip'],
@@ -618,19 +667,37 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
 
     // AUTH FAILURE — vendor agnostic brute force detection
     if (acsv.event_type === 'auth' && acsv.event_outcome === 'failure') {
-      const acsCount = acsv.count ?? 1
-      if (acsCount > 20) {
-        signals.push({ rule: 'ACS_AUTH_FAILURE_MASS', classification: 'Mass Authentication Attack', label: `Mass authentication failures (${acsCount}×) via ${acsVendor}`, severity: 'CRITICAL', confidence: 88, weight: 4, evidence: [`event_type=auth`, `event_outcome=failure`, `count=${acsCount}`, `src_ip=${acsv.src_ip ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110' })
-      } else if (acsCount > 5) {
-        signals.push({ rule: 'ACS_AUTH_FAILURE_HIGH', classification: 'Repeated Authentication Failures', label: `Repeated authentication failures (${acsCount}×) via ${acsVendor}`, severity: 'HIGH', confidence: 75, weight: 3, evidence: [`event_type=auth`, `event_outcome=failure`, `count=${acsCount}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110' })
+      // Windows brute force is covered by BRUTE_FORCE_* EventID signals
+      // (enrichment-behavioral tier). ACS behavioral signals are for
+      // Linux and CloudTrail where EventID signals do not fire.
+      if (acsVendor === 'windows') {
+        // skip — double-fire suppressed
       } else {
-        // ACS_AUTH_FAILURE_LOW: (event_outcome, src_ip) independence pair.
-        // Belt-and-suspenders: explicit Windows guard + independence gate.
-        // Windows: both event_type and event_outcome share derived:event_id_table —
-        // the gate alone correctly blocks it, but the vendor guard makes intent explicit.
-        // Windows coverage is via LOGON_FAILURE_LOW (EventID-based).
-        if (acsVendor !== 'windows' && checkIndependencePair(acs, 'event_outcome', 'src_ip')) {
-          signals.push({ rule: 'ACS_AUTH_FAILURE_LOW', classification: 'Authentication Failure', label: `Authentication failure via ${acsVendor}`, severity: 'LOW', confidence: 55, weight: 2, evidence: [`event_type=auth`, `event_outcome=failure`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110', independence_pair: ['event_outcome', 'src_ip'] })
+        const acsCount = acsv.count ?? 1
+
+        if (acsCount > 20
+            && checkIndependencePairOr(
+                 acsObject?.acs_data,
+                 ['count', 'src_ip'],
+                 ['count', 'event_outcome']
+               )) {
+          signals.push({ rule: 'ACS_AUTH_FAILURE_MASS', classification: 'Mass Authentication Attack', label: `Mass authentication failures (${acsCount}×) via ${acsVendor}`, severity: 'CRITICAL', confidence: 88, weight: 4, evidence: [`event_type=auth`, `event_outcome=failure`, `count=${acsCount}`, `src_ip=${acsv.src_ip ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110' })
+        } else if (acsCount > 5
+                   && checkIndependencePairOr(
+                        acsObject?.acs_data,
+                        ['count', 'src_ip'],
+                        ['count', 'event_outcome']
+                      )) {
+          signals.push({ rule: 'ACS_AUTH_FAILURE_HIGH', classification: 'Repeated Authentication Failures', label: `Repeated authentication failures (${acsCount}×) via ${acsVendor}`, severity: 'HIGH', confidence: 75, weight: 3, evidence: [`event_type=auth`, `event_outcome=failure`, `count=${acsCount}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110' })
+        } else {
+          // ACS_AUTH_FAILURE_LOW: (event_outcome, src_ip) independence pair.
+          // Belt-and-suspenders: explicit Windows guard + independence gate.
+          // Windows: both event_type and event_outcome share derived:event_id_table —
+          // the gate alone correctly blocks it, but the vendor guard makes intent explicit.
+          // Windows coverage is via LOGON_FAILURE_LOW (EventID-based).
+          if (acsVendor !== 'windows' && checkIndependencePair(acs, 'event_outcome', 'src_ip')) {
+            signals.push({ rule: 'ACS_AUTH_FAILURE_LOW', classification: 'Authentication Failure', label: `Authentication failure via ${acsVendor}`, severity: 'LOW', confidence: 55, weight: 2, evidence: [`event_type=auth`, `event_outcome=failure`, ...(acsv.src_ip ? [`src_ip=${acsv.src_ip}`] : [])], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1110', independence_pair: ['event_outcome', 'src_ip'] })
+          }
         }
       }
     }
@@ -638,7 +705,7 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
     // ACCOUNT DELETION — IAM/directory account removal (evidence destruction indicator)
     // Gate: action + user independently sourced
     if (acsv.event_type === 'privilege' && /deleteuser|deleterole|deletegroup/i.test(acsv.action ?? '') && checkIndependencePair(acs, 'action', 'user')) {
-      signals.push({ rule: 'ACS_ACCOUNT_DELETION', classification: 'Account Deletion — Potential Evidence Destruction', label: `Account deletion detected: ${acsv.action} via ${acsVendor}`, severity: 'HIGH', confidence: 82, weight: 4, evidence: [`event_type=privilege`, `action=${acsv.action}`, `user=${acsv.user ?? 'unknown'}`, `target=${acsv.target_user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1070.001', independence_pair: ['action', 'user'] })
+      signals.push({ rule: 'ACS_ACCOUNT_DELETION', classification: 'Account Deletion — Potential Evidence Destruction', label: `Account deletion detected: ${acsv.action} via ${acsVendor}`, severity: 'HIGH', confidence: 82, weight: 4, evidence: [`event_type=privilege`, `action=${acsv.action}`, `user=${acsv.user ?? 'unknown'}`, `target=${acsv.target_user ?? 'unknown'}`], category: 'behavioral', source: 'acs', signal_layer: 'behavioral', mitre: 'T1531', independence_pair: ['action', 'user'] })
     }
 
     // PRIVILEGE ESCALATION — sudo, role assumption, policy changes
@@ -670,7 +737,7 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
     }
 
     // LATERAL MOVEMENT CANDIDATE — successful network logon from internal source to different host
-    // Gate: src_ip + user independently sourced. Semantic: src_ip value must differ from host value.
+    // Gate: src_ip + host independently sourced. Semantic: src_ip value must differ from host value.
     if (
       acsv.event_type === 'auth' &&
       acsv.event_outcome === 'success' &&
@@ -678,30 +745,47 @@ function getSignals(parsed, enrichmentJudgment, redisHits, acsObject = null) {
       acsv.src_ip &&
       acsv.host &&
       acs.src_ip?.value !== acs.host?.value &&
-      checkIndependencePair(acs, 'src_ip', 'user')
+      checkIndependencePair(acs, 'src_ip', 'host')
     ) {
       const isInternalSrc = /^10\.|^172\.(1[6-9]|2\d|3[01])\.|^192\.168\./i.test(acsv.src_ip)
       if (isInternalSrc) {
-        signals.push({
-          rule: 'ACS_LATERAL_MOVEMENT_CANDIDATE',
-          classification: 'Lateral Movement Candidate',
-          label: `Internal network logon: ${acsv.src_ip} → ${acsv.host}`,
-          severity: 'MEDIUM',
-          confidence: 50,
-          weight: 2,
-          evidence: [`event_type=auth`, `event_outcome=success`, `src_ip=${acsv.src_ip}`, `host=${acsv.host}`],
-          category: 'behavioral',
-          source: 'acs',
-          signal_layer: 'behavioral',
-          mitre: 'T1021',
-          independence_pair: ['src_ip', 'user']
-        })
+        // Require prior session history for this src_ip.
+        // First-time connections (routine deployments, monitoring agents,
+        // authorized SSH) produce no session history and do not fire.
+        // Only IPs that appeared previously in this session are candidates.
+        // internalFailureHits tracks prior failed auth events from this
+        // RFC1918 src_ip in the current session. It is populated by a
+        // dedicated Redis read path (separate from the enrichment namespace
+        // which excludes private IPs). A count >= 1 means this IP has
+        // previously failed authentication in this session — a success
+        // now from the same IP to a different host is a lateral movement
+        // candidate.
+        const lateralPriorCount = internalFailureHits?.count ?? 0
+
+        if (lateralPriorCount >= 1) {
+          signals.push({
+            rule: 'ACS_LATERAL_MOVEMENT_CANDIDATE',
+            classification: 'Lateral Movement Candidate',
+            label: `Internal network logon: ${acsv.src_ip} → ${acsv.host}`,
+            severity: 'MEDIUM',
+            confidence: 50,
+            weight: 2,
+            evidence: [`event_type=auth`, `event_outcome=success`, `src_ip=${acsv.src_ip}`, `host=${acsv.host}`],
+            category: 'behavioral',
+            source: 'acs',
+            signal_layer: 'behavioral',
+            mitre: 'T1021',
+            independence_pair: ['src_ip', 'host']
+          })
+        }
       }
     }
 
     // SUSPICIOUS DATA ACCESS — cloud storage read on sensitive resources
     // Gate: action + resource proxy independently sourced (resource proxy = resource_name ?? object_name ?? task_name ?? service_name)
-    if (acsv.event_type === 'network' && /getobject|read|download|headobject|listobjects/i.test(acsv.action ?? '')) {
+    if (acsv.event_type === 'network' && /getobject|read|download|headobject|listobjects/i.test(acsv.action ?? '')
+      && (enrichmentJudgment?.judgment === 'CONFIRMED_MALICIOUS'
+          || enrichmentJudgment?.judgment === 'SUSPICIOUS')) {
       const acsResourceField = acs.resource_name ?? acs.object_name ?? acs.task_name ?? acs.service_name ?? { value: null, source: null }
       const resource = (acsResource ?? '').toLowerCase()
       const user = (acsv.user ?? '').toLowerCase()
@@ -877,6 +961,29 @@ function computeQualityFactor(normalizationScore, parseQuality, signals) {
   return 'LOW'
 }
 
+// Applies post-aggregation verdict overrides that require
+// streaming handler context (vendor origin, enrichment results)
+// unavailable inside aggregateSignals.
+//
+// INSUFFICIENT_DATA: fires only when the engine ran successfully
+// but the input was too sparse to process meaningfully.
+// Distinct from NO_DETECTION (system understood input, found nothing)
+// and from engine error (system failed to run).
+//
+// Returns a new object — does not mutate the input verdict.
+function applyVerdictOverrides(verdict, { isGenericVendor, normalizationScore, hasNoIPs }) {
+  if (isGenericVendor && normalizationScore <= 0.1 && hasNoIPs) {
+    return {
+      ...verdict,
+      verdictClass:           'INSUFFICIENT_DATA',
+      verdictReliabilityClass: 'TRACE_REQUIRED',
+      severity:               'LOW',
+      behavioral_confidence:  0,
+    }
+  }
+  return verdict
+}
+
 function normalizeFinalVerdict(v) {
   if (!v) v = {}
   return {
@@ -1030,6 +1137,7 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
     LOLBIN_CERTUTIL_SUSPICIOUS_PATH: 'LOLBin Staging to Suspicious Path',
     LOLBIN_MSHTA_REMOTE: 'Remote Script Execution via mshta',
     OFFICE_MACRO_DROPPER: 'Macro-based Dropper Execution',
+    BROWSER_SPAWN_SCRIPTING: 'Browser Process Spawning Scripting Host',
     POWERSHELL_ENCODED: 'Encoded PowerShell Execution',
     SCHEDULED_TASK_CRADLE: 'Malicious Scheduled Task Persistence',
     SCHEDULED_TASK_CREATED: 'Scheduled Task Created',
@@ -1115,8 +1223,13 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
 
   // ── Model E: behavioral_confidence ────────────────────────────────────────
   const dominantConf = dominant?.confidence ?? 0
-  const behavioralSupporters = sortedBehavioral.slice(1).filter(s =>
-    !isTemporal(s) && s.category !== 'asset'
+  // Filter by identity against dominant — not slice(1) — because dominant is selected
+  // from behavioralNonFrequency (a filtered subset of sortedBehavioral) and may not
+  // occupy index 0. slice(1) double-counts the dominant if any higher-ranked signal
+  // is excluded from dominance by the temporal or asset filters.
+  const behavioralSupporters = sortedBehavioral.filter(s =>
+    s !== dominant
+    && !isTemporal(s) && s.category !== 'asset'
     && (s.signal_layer === 'behavioral' || s.category === 'behavioral'))
   const supportingContrib = behavioralSupporters
     .reduce((acc, s, i) => acc + (s.confidence * (0.25 / (i + 2))), 0)
@@ -1920,6 +2033,7 @@ function getMitreName(id) {
     'T1530':     'Data from Cloud Storage',
     'T1003':     'OS Credential Dumping',
     'T1021':     'Remote Services',
+    'T1531':     'Account Access Removal',
   }
   return names[id] ?? id
 }
@@ -1938,7 +2052,7 @@ function getClassificationMitre(classification) {
     'Scheduled Task Created':                { id: 'T1053.005', tactic: 'Persistence' },
     'Suspicious Service Installation':       { id: 'T1543.003', tactic: 'Persistence' },
     'Security Log Tampering':                { id: 'T1070.001', tactic: 'Defense Evasion' },
-    'Account Deletion — Potential Evidence Destruction': { id: 'T1070.001', tactic: 'Defense Evasion' },
+    'Account Deletion — Potential Evidence Destruction': { id: 'T1531', tactic: 'Impact' },
     'Active Directory Credential Dump':      { id: 'T1003.003', tactic: 'Credential Access' },
     'SAM Database Access':                   { id: 'T1003.002', tactic: 'Credential Access' },
     'LSASS Memory Dump via LOLBin':          { id: 'T1003.001', tactic: 'Credential Access' },
@@ -2108,14 +2222,38 @@ export async function POST(request) {
           parsedAlert.parseQuality = 'generic'
         }
 
-        const signals      = getSignals(parsedAlert, enrichmentJudgment, redisHits, acsObject)
+        // Read internal failure history for ACS lateral movement detection.
+        // extractIPs strips RFC1918 addresses — internal src_ip values are
+        // excluded from the enrichment Redis namespace and need a separate
+        // read path. This enables ACS_LATERAL_MOVEMENT_CANDIDATE to detect
+        // cross-host auth patterns between internal hosts.
+        const acsSrcIpRaw = acsObject?.acs_data?.src_ip?.value
+        const isInternalSrcIpForLateral = acsSrcIpRaw
+          && /^10\.|^172\.(1[6-9]|2\d|3[01])\.|^192\.168\./i.test(acsSrcIpRaw)
+        let internalFailureHits = null
+        if (isInternalSrcIpForLateral) {
+          try {
+            const internalReadKey =
+              `session:${safeSessionId}:internal_failure:${acsSrcIpRaw}`
+            const raw = await redis.get(internalReadKey)
+            internalFailureHits = raw ?? null
+          } catch {
+            // Redis unavailable — fail open, lateral movement precondition
+            // will treat count as 0 and suppress the signal conservatively
+          }
+        }
+
+        const signals      = getSignals(parsedAlert, enrichmentJudgment, redisHits, acsObject, internalFailureHits)
         let finalVerdict
+        let engineErrored = false
         try {
           finalVerdict = normalizeFinalVerdict(
             aggregateSignals(signals, parsedAlert.parseQuality,
               acsObject?.meta?.normalization_score ?? 0)
           )
         } catch (engineErr) {
+          engineErrored = true
+          console.error('[ARBITER] Decision engine failed:', engineErr?.message, engineErr?.stack)
           finalVerdict = normalizeFinalVerdict({
             severity: 'UNKNOWN',
             classification: 'UNKNOWN',
@@ -2128,17 +2266,12 @@ export async function POST(request) {
             deterministicMitre: null,
           })
         }
-        // INSUFFICIENT_DATA override — fires when the system could not meaningfully
-        // process the input at all, not merely when no signals were found.
-        // NO_DETECTION = system understood the input, found nothing.
-        // INSUFFICIENT_DATA = system could not process the input.
-        const isLowNormScore  = (acsObject?.meta?.normalization_score ?? 0) <= 0.1
-        const hasNoIPs        = ips.length === 0
-        const isInsufficientData = isGenericVendor && isLowNormScore && hasNoIPs
-
-        if (isInsufficientData) {
-          finalVerdict.verdictClass = 'INSUFFICIENT_DATA'
-          finalVerdict.verdictReliabilityClass = 'TRACE_REQUIRED'
+        if (!engineErrored) {
+          finalVerdict = applyVerdictOverrides(finalVerdict, {
+            isGenericVendor,
+            normalizationScore: acsObject?.meta?.normalization_score ?? 0,
+            hasNoIPs: ips.length === 0,
+          })
         }
 
         const isActiveCampaign = (finalVerdict?.signals ?? signals).some(
@@ -2149,6 +2282,12 @@ export async function POST(request) {
           .filter(([_, v]) => v !== null)
           .map(([k, v]) => `${k}: ${v}`)
           .join('\n')
+
+        // Narrator is suppressed for states where LLM synthesis adds no value:
+        // NO_DETECTION has no signals to reason about; INSUFFICIENT_DATA has
+        // insufficient provenance for a reliable narrative.
+        const skipNarrator = finalVerdict.verdictClass === 'NO_DETECTION'
+          || finalVerdict.verdictClass === 'INSUFFICIENT_DATA'
 
         const narratorFallback = (() => {
           const mitreToTactic = {
@@ -2174,7 +2313,7 @@ export async function POST(request) {
             mitre_name:   finalVerdict.deterministicMitre
               ? getMitreName(finalVerdict.deterministicMitre)
               : finalVerdict.classification ?? 'Unknown',
-            reasoning: `The deterministic engine classified this alert as ${finalVerdict.classification} (${finalVerdict.severity}) based on ${behavioralCount} behavioral signal${behavioralCount !== 1 ? 's' : ''}. ${dominantLabel}.${temporalNote} Investigate ${asset} for signs of persistence or lateral movement consistent with this classification.`,
+            reasoning: skipNarrator ? null : `The deterministic engine classified this alert as ${finalVerdict.classification} (${finalVerdict.severity}) based on ${behavioralCount} behavioral signal${behavioralCount !== 1 ? 's' : ''}. ${dominantLabel}.${temporalNote} Investigate ${asset} for signs of persistence or lateral movement consistent with this classification.`,
           }
         })()
 
@@ -2187,41 +2326,43 @@ export async function POST(request) {
         }
 
         let narrator = narratorFallback
-        try {
-          const groqStream = await groq.chat.completions.create({
-            model:       'llama-3.3-70b-versatile',
-            temperature: 0.1,
-            max_tokens:  2000,
-            stream:      false,
-            messages: [
-              {
-                role: 'user',
-                content: buildNarratorPrompt(
-                  sanitizedAlert,
-                  { alertType: parsedAlert.alertType, fields: parsedContext },
-                  enrichmentJudgment,
-                  narratorRedisContext,
-                  isActiveCampaign,
-                  uniqueAssetCount,
-                  frequencyMultiplier,
-                  finalVerdict,
-                  acsObject
-                )
-              }
-            ]
-          })
-          const raw = groqStream.choices[0]?.message?.content ?? ''
-          const narratorOutput = (() => {
-            try {
-              const jsonMatch = raw.match(/\{[\s\S]*\}/)
-              if (!jsonMatch) return null
-              return JSON.parse(jsonMatch[0])
-            } catch { return null }
-          })()
-          narrator = isValidNarratorOutput(narratorOutput) ? narratorOutput : narratorFallback
-        } catch (groqErr) {
-          console.error('[ARBITER] Groq call failed, using deterministic fallback:', groqErr.message)
-          narrator = narratorFallback
+        if (!skipNarrator) {
+          try {
+            const groqStream = await groq.chat.completions.create({
+              model:       'llama-3.3-70b-versatile',
+              temperature: 0.1,
+              max_tokens:  2000,
+              stream:      false,
+              messages: [
+                {
+                  role: 'user',
+                  content: buildNarratorPrompt(
+                    sanitizedAlert,
+                    { alertType: parsedAlert.alertType, fields: parsedContext },
+                    enrichmentJudgment,
+                    narratorRedisContext,
+                    isActiveCampaign,
+                    uniqueAssetCount,
+                    frequencyMultiplier,
+                    finalVerdict,
+                    acsObject
+                  )
+                }
+              ]
+            })
+            const raw = groqStream.choices[0]?.message?.content ?? ''
+            const narratorOutput = (() => {
+              try {
+                const jsonMatch = raw.match(/\{[\s\S]*\}/)
+                if (!jsonMatch) return null
+                return JSON.parse(jsonMatch[0])
+              } catch { return null }
+            })()
+            narrator = isValidNarratorOutput(narratorOutput) ? narratorOutput : narratorFallback
+          } catch (groqErr) {
+            console.error('[ARBITER] Groq call failed, using deterministic fallback:', groqErr.message)
+            narrator = narratorFallback
+          }
         }
 
         const { recommendations: deterministicRecommendations, provenance: deterministicProvenance }
@@ -2382,6 +2523,35 @@ export async function POST(request) {
           ...(parsedAlert.allAssets ?? '').split(',').map(s => s.trim()).filter(Boolean)
         ].filter(Boolean)
         await writeRedisContext(ips, correlationUsername, { ...triage, allAffectedAssets }, caseId, safeSessionId)
+
+        // Write internal failure history for RFC1918 src_ip values.
+        // These are excluded from the enrichment Redis namespace by
+        // extractIPs() but required for ACS_LATERAL_MOVEMENT_CANDIDATE
+        // failure-context tracking. Write only on failure events —
+        // the lateral movement precondition requires prior failure evidence
+        // before a success triggers the signal.
+        const acsOutcomeForLateral =
+          acsObject?.acs_data?.event_outcome?.value
+        const acsSrcIpForLateralWrite =
+          acsObject?.acs_data?.src_ip?.value
+        const isRFC1918ForLateral = acsSrcIpForLateralWrite
+          && /^10\.|^172\.(1[6-9]|2\d|3[01])\.|^192\.168\./i
+             .test(acsSrcIpForLateralWrite)
+
+        if (isRFC1918ForLateral && acsOutcomeForLateral === 'failure') {
+          try {
+            const internalWriteKey =
+              `session:${safeSessionId}:internal_failure:${acsSrcIpForLateralWrite}`
+            const existing = await redis.get(internalWriteKey)
+            const prev = existing ?? { count: 0 }
+            await redis.set(
+              internalWriteKey,
+              { count: prev.count + 1, lastSeen: new Date().toISOString() },
+              { ex: REDIS_TTL }
+            )
+          } catch {
+          }
+        }
 
         // Stream final triage result
         send(controller, 'triage', {

@@ -141,11 +141,6 @@ export default function AuditLog({ onClose, onMitreFilter, onClearHistory }) {
                 {entry.triage.asset_is_critical && <span className="arb-asset-critical">CRITICAL ASSET</span>}
               </div>
 
-              <div>
-                <div style={{ fontFamily:'var(--font-mono),monospace', fontSize:'8px', color:'var(--text-muted)', letterSpacing:'0.15em', textTransform:'uppercase', marginBottom:'6px' }}>ARBITER REASONING</div>
-                <div style={{ background:'var(--bg-input)', borderLeft:'2px solid var(--amber)', borderRadius:'0 4px 4px 0', padding:'10px 14px', fontSize:'12px', color:'var(--text-secondary)', lineHeight:'1.75' }}>{Array.isArray(entry.triage.reasoning) ? entry.triage.reasoning.join(' ') : String(entry.triage.reasoning ?? '')}</div>
-              </div>
-
             </div>
 
             {selected !== null && logs[selected] && (() => {

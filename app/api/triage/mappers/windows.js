@@ -10,7 +10,7 @@ const EVENT_TYPE_MAP = {
   '4698': 'process', '4702': 'process', '4699': 'process', '4700': 'process',
   '4697': 'process', '7045': 'process',
   '4663': 'privilege', '4656': 'privilege', '4670': 'privilege',
-  '4720': 'privilege', '4732': 'privilege', '4728': 'privilege',
+  '4720': 'privilege', '4726': 'privilege', '4732': 'privilege', '4728': 'privilege',
   '1102': 'privilege', '4719': 'privilege',
   '4104': 'process',
 }
@@ -29,7 +29,8 @@ const EVENT_ACTION_MAP = {
   '4698': 'scheduled_task_created', '4702': 'scheduled_task_modified',
   '4697': 'service_installed',      '7045': 'service_installed',
   '4663': 'object_access',          '4656': 'object_access_requested',
-  '4720': 'account_created',        '4732': 'account_added_to_group',
+  '4720': 'account_created',        '4726': 'deleteuser',
+  '4732': 'account_added_to_group',
   '1102': 'audit_log_cleared',      '4719': 'audit_policy_changed',
   '4104': 'script_block_logged',
 }
@@ -67,6 +68,7 @@ export function mapWindows(text, parsedFields) {
       task_name:    w(parsedFields.taskName,                           'raw:kv:TaskName'),
       task_content: w(parsedFields.taskContent ?? null,               'raw:kv:TaskContent'),
       service_name: w(parsedFields.serviceName,                        'raw:kv:ServiceName'),
+      service_path: w(parsedFields.serviceFileName ?? null,            'raw:kv:ServiceFileName'),
       command_line: w(parsedFields.commandLine,                        'raw:kv:CommandLine'),
       process_name: w(parsedFields.processName,                        'raw:kv:NewProcessName'),
       parent_process: w(parsedFields.parentProcess ?? null,           'raw:kv:ParentProcessName'),

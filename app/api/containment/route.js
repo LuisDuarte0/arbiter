@@ -273,6 +273,205 @@ const PLAYBOOK_LOOKUP = {
       "Verify with the account owner before any credential reset",
     ],
   },
+  NTDS_ACCESS: {
+    phase1: [
+      "Verify whether access to the NTDS database was expected for this account and process",
+      "Check whether the accessing process is a known legitimate tool or an unexpected binary",
+      "Confirm with the domain admin team whether any authorized AD replication or backup was scheduled",
+    ],
+    phase2: [
+      "Determine whether the NTDS file was copied or transferred after access",
+      "Check for other credential access indicators on the same DC in this session",
+      "Assess whether any new authentication events occurred from unusual sources after this access",
+    ],
+    phase3_surface_safe: [
+      "If confirmed unauthorized: assume all domain credentials are compromised — document scope before any action",
+      "Establish whether the NTDS file was exfiltrated before any containment action",
+      "Coordinate with identity team — full domain credential rotation may be required",
+    ],
+  },
+  SAM_ACCESS: {
+    phase1: [
+      "Verify whether access to the SAM database was expected for this account and process",
+      "Check whether the accessing process matches known legitimate tools",
+      "Confirm whether any authorized credential backup or migration was scheduled",
+    ],
+    phase2: [
+      "Determine whether the SAM file was copied or read in full",
+      "Check for other credential access indicators on the same host in this session",
+      "Assess whether any new authentication events occurred from unusual sources after this access",
+    ],
+    phase3_surface_safe: [
+      "If confirmed unauthorized: assume local account credentials are compromised",
+      "Establish whether the SAM content was exfiltrated before any containment action",
+      "Coordinate credential reset for all local accounts on this host",
+    ],
+  },
+  MIMIKATZ_DETECTED: {
+    phase1: [
+      "Verify whether the process invoking credential access patterns was expected on this host",
+      "Check whether the binary name is a known legitimate tool renamed to evade detection",
+      "Confirm whether any authorized penetration test or red team exercise is active",
+    ],
+    phase2: [
+      "Determine whether any lateral movement or new authentication events occurred after execution",
+      "Check whether the process made network connections or wrote credential data to disk",
+    ],
+    phase3_surface_safe: [
+      "If confirmed malicious: assume all credentials cached on this host are compromised",
+      "Check for persistence mechanisms installed during or after the credential dump",
+      "Coordinate broad credential rotation with identity team before any host isolation",
+    ],
+  },
+  ACS_LATERAL_MOVEMENT_CANDIDATE: {
+    phase1: [
+      "Verify whether the source and destination hosts share an expected trust relationship",
+      "Check whether the credential used is consistent with normal access patterns for this account",
+      "Confirm whether the logon type and source IP match expected administrative or service behavior",
+    ],
+    phase2: [
+      "Determine what actions were taken on the destination host after the successful logon",
+      "Check whether the same credential was used for other lateral connections in this session",
+      "Assess whether the source host shows signs of compromise that would explain the movement",
+    ],
+    phase3_surface_safe: [
+      "If confirmed lateral movement: establish the full traversal path before isolating any single host",
+      "Document all hosts reached via this credential before any credential invalidation",
+      "Coordinate containment scope with the incident response team — single-host isolation may be insufficient",
+    ],
+  },
+  ACS_HIGH_VOLUME_DATA_ACCESS: {
+    phase1: [
+      "Verify whether the access volume is consistent with legitimate activity for this account",
+      "Check whether the accessed resources were within the expected scope for this identity",
+      "Confirm whether any authorized data migration or backup process was running",
+    ],
+    phase2: [
+      "Determine whether the data accessed was exfiltrated or remained within the environment",
+      "Assess the total volume of data accessed across the session",
+      "Check whether the access pattern suggests automated tooling or manual browsing",
+    ],
+    phase3_surface_safe: [
+      "If confirmed unauthorized: document the complete list of resources accessed before any identity action",
+      "Determine data classification of accessed resources before escalating",
+      "Coordinate with data owner and legal team before any containment action involving sensitive data",
+    ],
+  },
+  ACS_ACCOUNT_DELETION: {
+    phase1: [
+      "Verify whether the account deletion was authorized and matches expected lifecycle activity",
+      "Check whether the deleted account had active sessions or elevated permissions at time of deletion",
+      "Confirm whether the deletion was logged in any identity management or ticketing system",
+    ],
+    phase2: [
+      "Determine whether the deleted account was used for any malicious activity before deletion",
+      "Check whether other account management actions occurred from the same principal in this session",
+    ],
+    phase3_surface_safe: [
+      "If confirmed malicious: check whether account deletion was intended to destroy evidence — recover from directory tombstone if possible",
+      "Document the deleted account's group memberships and permissions from backup before any recovery action",
+      "Assess whether other accounts created by the same principal should be reviewed",
+    ],
+  },
+  SERVICE_SUSPICIOUS_PATH: {
+    phase1: [
+      "Verify whether the service binary path resolves to a legitimate executable",
+      "Check the service creation context — which account created it and when",
+      "Confirm whether any authorized software deployment or update was running at the time",
+    ],
+    phase2: [
+      "Determine whether the service binary was executed after installation",
+      "Check whether the service binary was written to disk from a network source",
+      "Assess whether other suspicious service installations occurred in this session",
+    ],
+    phase3_surface_safe: [
+      "If confirmed malicious: document the service binary hash and path before any removal",
+      "Check for persistence mechanisms linked to this service before stopping it",
+      "Verify the service is not a dependency for legitimate processes before disabling",
+    ],
+  },
+  LOLBIN_MSHTA_REMOTE: {
+    phase1: [
+      "Verify whether the remote resource contacted by mshta is known or expected infrastructure",
+      "Check whether mshta spawned any child processes following the remote connection",
+      "Confirm whether mshta is expected to make external connections in this environment",
+    ],
+    phase2: [
+      "Determine whether the remote resource delivered a payload that was subsequently executed",
+      "Check for any persistence mechanisms installed after the mshta execution",
+    ],
+    phase3_surface_safe: [
+      "If confirmed malicious: establish what was delivered and executed before any host action",
+      "Check for child processes spawned by mshta before terminating anything",
+      "Preserve the network connection artifacts before host isolation",
+    ],
+  },
+  LOLBIN_CERTUTIL_DOWNLOAD: {
+    phase1: [
+      "Verify whether certutil was invoked for a legitimate certificate operation or as a download proxy",
+      "Check whether any files were written to disk as a result of the certutil execution",
+      "Confirm whether certutil network access is expected in this environment",
+    ],
+    phase2: [
+      "Determine whether the downloaded file was subsequently executed",
+      "Check for other certutil invocations in the same session",
+    ],
+    phase3_surface_safe: [
+      "If confirmed malicious download: hash and document the downloaded file before any removal",
+      "Check for execution of the downloaded payload before host isolation",
+      "Preserve the downloaded file as forensic evidence before remediation",
+    ],
+  },
+  LOLBIN_CERTUTIL_SUSPICIOUS_PATH: {
+    phase1: [
+      "Verify whether the file written to the suspicious path was subsequently executed",
+      "Check the file written for indicators of staged payloads or known malicious content",
+      "Confirm whether certutil decode operations are expected in this environment",
+    ],
+    phase2: [
+      "Determine whether other files were staged to suspicious paths in this session",
+      "Check for execution events originating from the suspicious path directory",
+    ],
+    phase3_surface_safe: [
+      "If confirmed staging: document and hash the staged file before removal",
+      "Check for execution of the staged payload before any directory cleanup",
+      "Assess whether the staging path contains other artifacts from this session",
+    ],
+  },
+  OFFICE_MACRO_DROPPER: {
+    phase1: [
+      "Verify whether the Office application that spawned the process was handling a document from an external or untrusted source",
+      "Identify the spawned process and its full command line — determine whether it made network connections, wrote files, or spawned further children",
+      "Check whether macro execution is expected or authorized for this user and host",
+    ],
+    phase2: [
+      "Determine whether the spawned process persisted — check scheduled tasks, services, and registry run keys on the affected host",
+      "Identify all child processes spawned from the LOLBin and trace the full execution chain",
+      "Check whether the same document or macro was opened on other hosts in this session",
+    ],
+    phase3_surface_safe: [
+      "Establish the full execution chain from document open to final payload before any host action",
+      "Preserve the originating document and all spawned process artifacts before isolation",
+      "Document all network connections made by the execution chain — C2 infrastructure must be identified before host isolation",
+    ],
+  },
+  BROWSER_SPAWN_SCRIPTING: {
+    phase1: [
+      "Verify whether the browser spawning the scripting process is consistent with known enterprise tooling or security agent behavior on this host",
+      "Identify the spawned process and its full command line — determine what it attempted to execute or contact",
+      "Check whether the user was interacting with the browser at the time or whether this was a background/headless execution",
+    ],
+    phase2: [
+      "Determine whether the spawned process made network connections or wrote files to disk",
+      "Check for other anomalous browser activity on this host in the session — unusual URLs, downloads, or browser extension changes",
+      "Assess whether the same spawning pattern appeared on other hosts",
+    ],
+    phase3_surface_safe: [
+      "If confirmed malicious: identify the originating URL or browser extension before any host action",
+      "Preserve browser history, cache, and extension state as forensic artifacts",
+      "Document all child process activity before host isolation — the full execution chain must be understood first",
+    ],
+  },
 }
 
 const GENERIC_PLAYBOOK = {
@@ -292,14 +491,40 @@ const GENERIC_PLAYBOOK = {
   ],
 }
 
-function buildPlaybook(triage, signals) {
-  const dominantRule = signals?.find(s =>
+function buildPlaybook(triage, signals, decision_trace = []) {
+  // Check decision_trace for enrichment_specific classification
+  // When classification came from a specific enrichment signal
+  // (e.g. AUDIT_LOG_CLEARED, NTDS_ACCESS, SAM_ACCESS), prefer
+  // that signal's playbook entry over the behavioral dominant.
+  const classificationTrace = decision_trace?.find(
+    e => e.type === 'classification' && e.reason === 'enrichment_specific'
+  )
+  const classificationRule = classificationTrace?.rule ?? null
+
+  const behavioralDominant = signals?.find(s =>
     s.signal_layer === 'behavioral' && !s.frequency
-  )?.rule ?? signals?.find(s =>
+  )?.rule
+
+  const enrichmentDominant = signals?.find(s =>
     s.signal_layer === 'enrichment' && s.category === 'behavioral'
-  )?.rule ?? signals?.find(s =>
+  )?.rule
+
+  const temporalDominant = signals?.find(s =>
     s.signal_layer === 'temporal' && !s.frequency
   )?.rule
+
+  // Priority: classification source (when enrichment_specific) →
+  // behavioral dominant → enrichment behavioral → temporal
+  // This ensures AUDIT_LOG_CLEARED, NTDS_ACCESS etc. drive the
+  // playbook even when ACS_PRIVILEGE_ACTION is behavioral dominant
+  const dominantRule = (classificationRule && PLAYBOOK_LOOKUP[classificationRule])
+    ? classificationRule
+    : (behavioralDominant && PLAYBOOK_LOOKUP[behavioralDominant])
+    ? behavioralDominant
+    : (enrichmentDominant && PLAYBOOK_LOOKUP[enrichmentDominant])
+    ? enrichmentDominant
+    : temporalDominant
+    ?? null
 
   const entry = PLAYBOOK_LOOKUP[dominantRule] ?? GENERIC_PLAYBOOK
 
@@ -377,13 +602,13 @@ function buildPlaybook(triage, signals) {
 
 export async function POST(request) {
   try {
-    const { triage, enrichment, ips, signals } = await request.json()
+    const { triage, enrichment, ips, signals, decision_trace } = await request.json()
 
     if (!triage) {
       return Response.json({ error: 'No triage data provided.' }, { status: 400 })
     }
 
-    const playbook = buildPlaybook(triage, signals ?? [])
+    const playbook = buildPlaybook(triage, signals ?? [], decision_trace ?? [])
     return Response.json({ playbook })
 
   } catch (err) {

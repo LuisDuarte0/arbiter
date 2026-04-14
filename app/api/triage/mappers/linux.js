@@ -65,8 +65,14 @@ export function mapLinux(text) {
   const srcPortRaw = get(/port\s+(\d+)/i)
   const srcPortVal = srcPortRaw ? parseInt(srcPortRaw, 10) : null
 
-  const failureMatches = text.match(/Failed password|authentication failure|Invalid user|FAILED LOGIN/gi)
-  const countVal = failureMatches ? failureMatches.length : null
+  // Count matched lines rather than matched occurrences —
+  // prevents inflation when a line contains multiple failure
+  // phrases. For standard syslog format both produce identical
+  // results; this is defensive for edge cases.
+  const failureLines = text.split('\n').filter(line =>
+    /Failed password|authentication failure|Invalid user|FAILED LOGIN/i.test(line)
+  )
+  const countVal = failureLines.length > 0 ? failureLines.length : null
 
   return {
     meta: {

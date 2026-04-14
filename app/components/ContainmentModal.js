@@ -16,7 +16,13 @@ export default function ContainmentModal({ result, onClose }) {
         const res = await fetch('/api/containment', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ triage, enrichment, ips, signals }),
+          body: JSON.stringify({
+            triage,
+            enrichment,
+            ips,
+            signals,
+            decision_trace: result?.meta?.decisionTrace ?? [],
+          }),
         })
         const data = await res.json()
         if (data.error) throw new Error(data.error)

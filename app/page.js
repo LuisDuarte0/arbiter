@@ -210,7 +210,7 @@ export default function Home() {
                 id:         newId,
                 timestamp:  new Date().toISOString(),
                 alertText,
-                triage:     data.triage,
+                triage:     { ...data.triage, tactic: data.triage.mitre_tactic ?? 'Unknown', reasoning: undefined },
                 enrichment: data.enrichment,
                 ips:        data.ips,
                 meta:       data.meta,

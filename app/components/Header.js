@@ -1,6 +1,7 @@
 'use client'
 import React, { useState, useEffect } from 'react'
 import AuditLog from './AuditLog'
+import AboutModal from './AboutModal'
 
 function CoreIndicator() {
   const canvasRef = React.useRef(null)
@@ -90,25 +91,6 @@ function CoreIndicator() {
   )
 }
 
-function AboutModal({ onClose }) {
-  return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(8,12,20,0.85)', zIndex: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }} onClick={onClose}>
-      <div style={{ position: 'relative', background: 'var(--bg-card)', border: '0.5px solid var(--border-bright)', borderRadius: '6px', padding: '32px', width: '420px', maxWidth: '90vw' }} onClick={e => e.stopPropagation()}>
-        <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--text-muted)', letterSpacing: '0.18em', marginBottom: '20px' }}>ABOUT ARBITER</div>
-        <div style={{ fontSize: '20px', fontWeight: '500', color: 'var(--text-primary)', marginBottom: '8px' }}>Luis Carlos Moreira Duarte</div>
-        <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '10px', color: 'var(--amber)', marginBottom: '16px' }}>Detection Engineering · Tempest Security Intelligence</div>
-        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', lineHeight: '1.7', marginBottom: '20px' }}>
-          ARBITER is an AI-powered SOC alert triage engine built to demonstrate real-world detection engineering — enrichment pipelines, LLM-based classification, temporal correlation via Redis, and MITRE ATT&CK coverage analysis.
-        </div>
-        <div style={{ display: 'flex', gap: '8px' }}>
-          <a href="https://linkedin.com" target="_blank" rel="noreferrer" style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--amber)', letterSpacing: '0.08em', border: '0.5px solid var(--amber-40)', borderRadius: '3px', padding: '5px 12px', textDecoration: 'none' }}>LINKEDIN →</a>
-          <a href="https://github.com/LuisDuarte0/arbiter" target="_blank" rel="noreferrer" style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-secondary)', letterSpacing: '0.08em', border: '0.5px solid var(--border-bright)', borderRadius: '3px', padding: '5px 12px', textDecoration: 'none' }}>GITHUB →</a>
-        </div>
-        <button onClick={onClose} style={{ position: 'absolute', top: '16px', right: '16px', background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '14px' }}>✕</button>
-      </div>
-    </div>
-  )
-}
 
 function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
   const [logs, setLogs] = React.useState([])
@@ -443,11 +425,29 @@ function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
   )
 }
 
+const AWAITING_KEY = 'arbiter_about_awaiting_return'
+
 export default function Header({ activeId, result, onReset, onMitreFilter, redisInsights, onClearHistory }) {
-  const [auditOpen,  setAuditOpen]  = useState(false)
-  const [mitreOpen,  setMitreOpen]  = useState(false)
-  const [aboutOpen,  setAboutOpen]  = useState(false)
-  const [auditCount, setAuditCount] = useState(0)
+  const [auditOpen,          setAuditOpen]          = useState(false)
+  const [mitreOpen,          setMitreOpen]          = useState(false)
+  const [aboutOpen,          setAboutOpen]          = useState(false)
+  const [auditCount,         setAuditCount]         = useState(0)
+  const [aboutAwaitingReturn, setAboutAwaitingReturn] = useState(false)
+
+  useEffect(() => {
+    function check() {
+      try { setAboutAwaitingReturn(!!localStorage.getItem(AWAITING_KEY)) } catch {}
+    }
+    check()
+    window.addEventListener('storage', check)
+    return () => window.removeEventListener('storage', check)
+  }, [])
+
+  function openAbout() {
+    setAboutOpen(true)
+    try { localStorage.removeItem(AWAITING_KEY) } catch {}
+    setAboutAwaitingReturn(false)
+  }
 
   useEffect(() => {
     function updateCount() {
@@ -465,8 +465,9 @@ export default function Header({ activeId, result, onReset, onMitreFilter, redis
   return (
     <>
       <style>{`
-        @keyframes arbSlideIn { from{transform:translateX(100%)}to{transform:translateX(0)} }
-        @keyframes arbFadeIn  { from{opacity:0}to{opacity:1} }
+        @keyframes arbSlideIn  { from{transform:translateX(100%)}to{transform:translateX(0)} }
+        @keyframes arbFadeIn   { from{opacity:0}to{opacity:1} }
+        @keyframes arbDotPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.8)} }
         .mitre-tl-row { display:flex;align-items:center;height:48px;border-bottom:0.5px solid #151E2E;position:relative; }
         .mitre-tl-row:last-child { border-bottom:none; }
         .mitre-tl-dot { width:10px;height:10px;border-radius:50%;border:1.5px solid;background:#080C14;transition:transform 0.15s;cursor:pointer;flex-shrink:0; }
@@ -515,10 +516,15 @@ export default function Header({ activeId, result, onReset, onMitreFilter, redis
             onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'var(--text-primary)' }}
             onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-secondary)' }}
           >MITRE ATT&CK</button>
-          <button style={{ ...ghostBtn, color: 'var(--text-muted)', border: '0.5px solid rgba(255,255,255,0.06)' }} onClick={() => setAboutOpen(true)}
+          <button style={{ ...ghostBtn, color: 'var(--text-muted)', border: '0.5px solid rgba(255,255,255,0.06)', position: 'relative' }} onClick={openAbout}
             onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'var(--text-secondary)' }}
             onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-muted)' }}
-          >ABOUT</button>
+          >
+            ABOUT
+            {aboutAwaitingReturn && (
+              <span style={{ position: 'absolute', top: '3px', right: '3px', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--amber)', animation: 'arbDotPulse 1.6s ease-in-out infinite', pointerEvents: 'none' }} />
+            )}
+          </button>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexShrink: 0 }}>

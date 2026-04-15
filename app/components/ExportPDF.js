@@ -237,21 +237,6 @@ export async function exportToPDF(result, alertText) {
   hrule(y)
   y += 7
 
-  // ── REASONING ─────────────────────────────────────────────────────────────
-  cap('ARBITER REASONING', margin, y)
-  y += 5
-
-  // Amber left border + light fill
-  const reasonLines = doc.splitTextToSize(triage.reasoning ?? '', cW - 8)
-  const reasonH     = reasonLines.length * 4.5 + 8
-  doc.setFillColor(255, 252, 242)
-  doc.roundedRect(margin, y, cW, reasonH, 2, 2, 'F')
-  doc.setFillColor(...amber)
-  doc.rect(margin, y, 1.8, reasonH, 'F')
-  h(8, dark)
-  doc.text(reasonLines, margin + 6, y + 5.5)
-  y += reasonH + 8
-
   // ── THREAT INTEL ──────────────────────────────────────────────────────────
   if (ips?.length > 0) {
     if (y > 230) { doc.addPage(); y = 20 }

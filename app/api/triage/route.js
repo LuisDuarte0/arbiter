@@ -1302,22 +1302,31 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
   // without vendor-agnostic behavioral evidence.
   // Temporal-only verdicts always require trace validation — session context
   // must be understood before acting on a temporal-only classification.
+  const contradictionTactics = (() => {
+    const tactics = [...new Set(signals
+      .filter(s => s.mitre)
+      .map(s => getMitreTactic(s.mitre))
+      .filter(Boolean))]
+    return tactics.length >= 3 ? tactics : []
+  })()
+  const hasSignalContradiction = contradictionTactics.length > 0
+  const dominantWeight = dominant?.weight ?? 0
   const verdictReliabilityClass = (() => {
     if (verdictClass !== 'DEFENSIBLE_VERDICT') return 'TRACE_REQUIRED'
     if (!hasBehavioralForVerdict && !hasDetectionEnrichment && hasNonFrequencyTemporal)
       return 'TRACE_REQUIRED'
-    const dominantWeight = dominant?.weight ?? 0
-    const hasSignalContradiction = (() => {
-      const tactics = [...new Set(signals
-        .filter(s => s.mitre)
-        .map(s => getMitreTactic(s.mitre))
-        .filter(Boolean))]
-      return tactics.length >= 3
-    })()
     if (dominantWeight >= 4 && normalizationScore >= 0.7 && !hasSignalContradiction)
       return 'SURFACE_SAFE'
     return 'TRACE_REQUIRED'
   })()
+
+  if (contradictionTactics.length > 0) {
+    decision_trace.push({
+      type: 'contradiction',
+      label: `Signals span ${contradictionTactics.length} attack tactics (${contradictionTactics.join(' · ')}) — verify full attack chain before acting`,
+      tactics: contradictionTactics,
+    })
+  }
 
   return {
     severity:                  finalSeverity,
@@ -1602,14 +1611,11 @@ Return ONLY a JSON object. No markdown, no backticks, no preamble:
 {
   "indicators": string[] (3-8 technical facts from the alert — EventCodes, binary names, arguments, asset names, timestamps),
   "tactic": string (MITRE tactic name — e.g. "Credential Access", "Defense Evasion", "Execution"),
-  "mitre_tactic": string (must match tactic exactly),
-  "reasoning": string (one synthesis paragraph as a plain string — synthesize what the behavioral signals mean together, what the enrichment context adds, and the overall risk picture for this alert)
+  "mitre_tactic": string (must match tactic exactly)
 }
 
 RULES:
-- reasoning MUST be a plain string — never an object or array
-- DO NOT include mitre_id, mitre_name, recommendations, or recommendation_provenance
-- reasoning synthesizes the full picture — do not repeat the classification verbatim`
+- DO NOT include mitre_id, mitre_name, recommendations, recommendation_provenance, or reasoning`
 }
 
 // ── IP ENRICHMENT ─────────────────────────────────────────────────────────────
@@ -1887,9 +1893,10 @@ export async function POST(request) {
         }
 
         const parsedAlert   = parseAlert(alertText)
-        // ── ACS NORMALIZATION (feature/acs-architecture) ──────────────────────
-        // Runs alongside existing pipeline — does not yet replace it.
-        // Will progressively take over detection in future iterations.
+        // ── ACS NORMALIZATION ────────────────────────────────────────────────
+        // ACS v2 is the primary detection path. parseAlert() output
+        // serves as a fallback for fields the ACS mappers do not cover.
+        // The progressive migration described here is complete.
         let acsObject = null
         try {
           const { normalize } = await import('./normalizer.js')
@@ -2097,13 +2104,11 @@ export async function POST(request) {
             mitre_name:   finalVerdict.deterministicMitre
               ? getMitreName(finalVerdict.deterministicMitre)
               : finalVerdict.classification ?? 'Unknown',
-            reasoning: skipNarrator ? null : `The deterministic engine classified this alert as ${finalVerdict.classification} (${finalVerdict.severity}) based on ${behavioralCount} behavioral signal${behavioralCount !== 1 ? 's' : ''}. ${dominantLabel}.${temporalNote} Investigate ${asset} for signs of persistence or lateral movement consistent with this classification.`,
           }
         })()
 
         function isValidNarratorOutput(obj) {
           if (!obj || typeof obj !== 'object') return false
-          if (typeof obj.reasoning !== 'string' || obj.reasoning.trim().length < 20) return false
           if (typeof obj.tactic !== 'string' || obj.tactic.trim().length === 0) return false
           if (typeof obj.mitre_tactic !== 'string' || obj.mitre_tactic.trim().length === 0) return false
           return true
@@ -2235,13 +2240,6 @@ export async function POST(request) {
           verdict_reliability_class: finalVerdict.verdictReliabilityClass,
           behavioral_confidence:     finalVerdict.behavioral_confidence,
           quality_factor:            finalVerdict.quality_factor,
-          reasoning: (() => {
-            const r = narrator?.reasoning
-            if (!r) return narratorFallback.reasoning
-            if (Array.isArray(r)) return r.join(' ')
-            if (typeof r === 'object' && r.text) return String(r.text)
-            return String(r)
-          })(),
         }
 
         // Update affected_asset in recommendations now that triage.affected_asset is resolved
@@ -2252,7 +2250,7 @@ export async function POST(request) {
 
         // tactic (narrator free text) and mitre_tactic (deterministic lookup) may legitimately differ — no sync
 
-        const requiredTriageFields = ['severity','classification','confidence','asset_is_critical','evidence','indicators','tactic','mitre_id','mitre_name','mitre_tactic','recommendations','reasoning']
+        const requiredTriageFields = ['severity','classification','confidence','asset_is_critical','evidence','indicators','tactic','mitre_id','mitre_name','mitre_tactic','recommendations']
         const missingFields = requiredTriageFields.filter(f => !(f in triage) || triage[f] === null || triage[f] === undefined)
         if (missingFields.length > 0) {
           console.error('[ARBITER] Output contract violation — missing fields:', missingFields)
@@ -2263,7 +2261,6 @@ export async function POST(request) {
               triage.recommendations = fallbackRecs
               triage.recommendation_provenance = fallbackProv
             }
-            else if (f === 'reasoning') triage[f] = narratorFallback.reasoning
             else if (f === 'indicators') triage[f] = narratorFallback.indicators
             else if (typeof triage[f] === 'undefined') triage[f] = narratorFallback[f] ?? null
           })

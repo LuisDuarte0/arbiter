@@ -190,7 +190,7 @@ export default function Home() {
               timestamp: new Date(),
               classification: data.triage.classification,
               severity:       data.triage.severity,
-              tactic:         data.triage.tactic,
+              tactic:         data.triage.mitre_tactic,
               asset:          data.triage.affected_asset,
               confidence:     data.triage.confidence,
               fullResult:     data,

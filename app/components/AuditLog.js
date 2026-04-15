@@ -26,11 +26,6 @@ export default function AuditLog({ onClose, onMitreFilter, onClearHistory }) {
     a.download = `arbiter-${e.id}.json`; a.click()
   }
 
-  async function exportPDF() {
-    const { exportToPDF } = await import('./ExportPDF')
-    await exportToPDF({ ...entry, id: entry.id }, entry.alertText)
-  }
-
   function handleClearAll() {
     localStorage.removeItem('arbiter_audit')
     localStorage.removeItem('arbiter_history')
@@ -77,7 +72,6 @@ export default function AuditLog({ onClose, onMitreFilter, onClearHistory }) {
           <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
             <button className="arb-audit-action-btn" onClick={exportOne}>EXPORT JSON</button>
             <button className="arb-audit-action-btn" onClick={exportAll}>EXPORT ALL</button>
-            <button className="arb-audit-action-btn" onClick={exportPDF} style={{ color:'var(--amber)', borderColor:'var(--amber-40)' }}>EXPORT PDF</button>
             <button
               className="arb-audit-action-btn"
               onClick={handleClearAll}
@@ -126,7 +120,7 @@ export default function AuditLog({ onClose, onMitreFilter, onClearHistory }) {
                 <div>
                   <div style={{ fontFamily:'var(--font-mono),monospace', fontSize:'9px', color:'var(--text-muted)', marginBottom:'6px' }}>{entry.id}</div>
                   <div style={{ fontSize:'18px', fontWeight:'500', color:'var(--text-primary)', marginBottom:'4px' }}>{entry.triage.classification}</div>
-                  <div style={{ fontFamily:'var(--font-mono),monospace', fontSize:'10px', color:'var(--text-secondary)' }}>{entry.triage.tactic} · {entry.triage.mitre_id}</div>
+                  <div style={{ fontFamily:'var(--font-mono),monospace', fontSize:'10px', color:'var(--text-secondary)' }}>{entry.triage.mitre_tactic} · {entry.triage.mitre_id}</div>
                 </div>
                 <div style={{ textAlign:'right' }}>
                   <span className={`arb-badge arb-${entry.triage.severity.toLowerCase()}`}>{entry.triage.severity}</span>
@@ -145,7 +139,6 @@ export default function AuditLog({ onClose, onMitreFilter, onClearHistory }) {
 
             {selected !== null && logs[selected] && (() => {
               const log = logs[selected]
-              const isDeterministic = log.meta?.signals?.some(s => s.mitre)
               const isCorrelated = log.meta?.correlated
               return (
                 <div style={{ borderTop: '0.5px solid var(--border)', padding: '14px 20px' }}>
@@ -155,15 +148,10 @@ export default function AuditLog({ onClose, onMitreFilter, onClearHistory }) {
                       ▲ PART OF ACTIVE CAMPAIGN — seen across {Math.max(log.meta?.uniqueAssets ?? 0, 1)} asset{Math.max(log.meta?.uniqueAssets ?? 0, 1) !== 1 ? 's' : ''} in last 24h
                     </div>
                   )}
-                  <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '10px' }}>
-                    <div>
-                      <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '13px', color: 'var(--amber)', fontWeight: '600', marginBottom: '3px' }}>{log.triage?.mitre_id}</div>
-                      <div style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)', marginBottom: '3px' }}>{log.triage?.mitre_name}</div>
-                      <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-secondary)' }}>{log.triage?.mitre_tactic}</div>
-                    </div>
-                    <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: isDeterministic ? 'var(--amber)' : 'var(--text-muted)', background: isDeterministic ? 'var(--amber-15)' : 'rgba(255,255,255,0.04)', border: `0.5px solid ${isDeterministic ? 'var(--amber-40)' : 'rgba(255,255,255,0.08)'}`, borderRadius: '2px', padding: '2px 6px', letterSpacing: '0.08em', flexShrink: 0 }}>
-                      {isDeterministic ? 'DETERMINISTIC' : 'LLM NARRATOR'}
-                    </span>
+                  <div style={{ marginBottom: '10px' }}>
+                    <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '13px', color: 'var(--amber)', fontWeight: '600', marginBottom: '3px' }}>{log.triage?.mitre_id}</div>
+                    <div style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary)', marginBottom: '3px' }}>{log.triage?.mitre_name}</div>
+                    <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-secondary)' }}>{log.triage?.mitre_tactic}</div>
                   </div>
                   {log.meta?.signals?.length > 0 && (
                     <div>

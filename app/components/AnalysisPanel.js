@@ -538,7 +538,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
               </div>
               <div style={S.verdictTitle}>{triage.classification}</div>
               <div style={S.verdictSub}>
-                <span>{triage.tactic}</span>
+                <span>{triage.mitre_tactic}</span>
                 <span style={{ color: 'var(--border-bright)' }}>·</span>
                 <span style={{ color: 'var(--amber)' }}>{triage.mitre_id}</span>
                 <span style={{ color: 'var(--border-bright)' }}>·</span>
@@ -689,7 +689,6 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                           mitre_id: triage.mitre_id,
                           mitre_name: triage.mitre_name,
                           mitre_tactic: triage.mitre_tactic,
-                          tactic: triage.tactic,
                           affected_asset: triage.affected_asset,
                           asset_is_critical: triage.asset_is_critical,
                           evidence: triage.evidence,
@@ -870,7 +869,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
               </div>
               <div style={S.verdictTitle}>{triage.classification}</div>
               <div style={S.verdictSub}>
-                <span>{triage.tactic}</span>
+                <span>{triage.mitre_tactic}</span>
                 <span style={{ color: 'var(--border-bright)' }}>·</span>
                 <span style={{ color: 'var(--amber)' }}>{triage.mitre_id}</span>
                 {result?.meta?.processingTime && (
@@ -1064,7 +1063,6 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                           mitre_id: triage.mitre_id,
                           mitre_name: triage.mitre_name,
                           mitre_tactic: triage.mitre_tactic,
-                          tactic: triage.tactic,
                           affected_asset: triage.affected_asset,
                           asset_is_critical: triage.asset_is_critical,
                           evidence: triage.evidence,

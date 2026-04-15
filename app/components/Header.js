@@ -125,7 +125,7 @@ function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
   const techMap = {}
   valid.forEach(l => {
     const id = l.triage.mitre_id
-    if (!techMap[id]) techMap[id] = { id, name: l.triage.mitre_name ?? id, tactic: l.triage.mitre_tactic ?? l.triage.tactic ?? '', count: 0, severities: [], assets: [], events: [] }
+    if (!techMap[id]) techMap[id] = { id, name: l.triage.mitre_name ?? id, tactic: l.triage.mitre_tactic ?? '', count: 0, severities: [], assets: [], events: [] }
     techMap[id].count++
     techMap[id].severities.push(l.triage.severity)
     if (l.triage.affected_asset && l.triage.affected_asset !== 'UNKNOWN') techMap[id].assets.push(l.triage.affected_asset)
@@ -494,7 +494,7 @@ export default function Header({ activeId, result, onReset, onMitreFilter, redis
           <div className="arb-hdivider" />
           <div className="arb-hmeta">
             <div className="arb-case-id">{activeId ?? 'NO ACTIVE CASE'}</div>
-            <div className="arb-case-sub">{result ? `${result.triage.tactic.toUpperCase()} · ANALYSIS COMPLETE` : 'AWAITING ALERT INPUT'}</div>
+            <div className="arb-case-sub">{result ? `${(result.triage.mitre_tactic ?? 'UNKNOWN').toUpperCase()} · ANALYSIS COMPLETE` : 'AWAITING ALERT INPUT'}</div>
           </div>
         </div>
 

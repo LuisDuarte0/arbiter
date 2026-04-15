@@ -1,9 +1,6 @@
 export const maxDuration = 60
 
-import Groq from 'groq-sdk'
 import { Redis } from '@upstash/redis'
-
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
 
 const redis = new Redis({
   url:   process.env.UPSTASH_REDIS_REST_URL,
@@ -153,16 +150,6 @@ function buildRedisContextSummary(hits) {
     const indicator = rawKey.startsWith('ip:') ? `IP ${rawKey.slice(3)}` : `User ${rawKey.slice(5)}`
     return `${indicator}: seen ${h.count}× in last 24h | last severity=${h.severity} | assets=[${(h.assets ?? []).join(', ')}] | ${age}min ago | cases=[${(h.cases ?? []).slice(0,3).join(', ')}]`
   }).join('\n')
-}
-
-// ── PROMPT INJECTION SANITIZER ────────────────────────────────────────────────
-// Treats all log input as untrusted. Strips instruction-like patterns.
-function sanitizeAlertText(text) {
-  return text
-    .replace(/\b(ignore|disregard|forget|override|bypass|you are|act as|pretend|system prompt|new instruction|jailbreak)\b.{0,80}/gi, '[REDACTED]')
-    .replace(/(?:[A-Za-z0-9+/]{40,}={0,2})/g, '[BASE64_BLOB]')
-    .replace(/"/g, "'")
-    .trim()
 }
 
 // ── HARDENED ALERT PRE-PARSER ─────────────────────────────────────────────────
@@ -919,6 +906,7 @@ function getMitreTactic(mitreId) {
     'T1110': 'Credential Access', 'T1110.001': 'Credential Access', 'T1110.003': 'Credential Access',
     'T1003': 'Credential Access', 'T1003.001': 'Credential Access', 'T1003.002': 'Credential Access', 'T1003.003': 'Credential Access',
     'T1078': 'Initial Access', 'T1566': 'Initial Access', 'T1566.001': 'Initial Access',
+    'T1189': 'Initial Access',
     'T1059': 'Execution', 'T1059.001': 'Execution', 'T1059.003': 'Execution',
     'T1204': 'Execution', 'T1204.002': 'Execution',
     'T1053': 'Persistence', 'T1053.005': 'Persistence',
@@ -935,6 +923,8 @@ function getMitreTactic(mitreId) {
     'T1134': 'Privilege Escalation',
     'T1087': 'Discovery',
     'T1078.004': 'Privilege Escalation',
+    'T1530': 'Collection',
+    'T1531': 'Impact',
   }
   const base = mitreId.split('.')[0]
   return map[mitreId] ?? map[base] ?? null
@@ -942,21 +932,10 @@ function getMitreTactic(mitreId) {
 
 function computeQualityFactor(normalizationScore, parseQuality, signals) {
   const hasSignalDivergence = (() => {
-    const tacticGroups = signals.filter(s => s.mitre).map(s => {
-      const t = s.mitre?.split('.')?.[0]
-      const tacticMap = {
-        'T1110': 'CredentialAccess', 'T1003': 'CredentialAccess',
-        'T1059': 'Execution', 'T1204': 'Execution', 'T1569': 'Execution',
-        'T1053': 'Persistence', 'T1543': 'Persistence', 'T1136': 'Persistence', 'T1098': 'Persistence',
-        'T1055': 'DefenseEvasion', 'T1070': 'DefenseEvasion', 'T1218': 'DefenseEvasion', 'T1027': 'DefenseEvasion',
-        'T1105': 'CommandControl',
-        'T1021': 'LateralMovement',
-        'T1548': 'PrivilegeEscalation', 'T1134': 'PrivilegeEscalation', 'T1078': 'PrivilegeEscalation',
-        'T1087': 'Discovery',
-        'T1566': 'InitialAccess',
-      }
-      return tacticMap[t] ?? null
-    }).filter(Boolean)
+    const tacticGroups = signals
+      .filter(s => s.mitre)
+      .map(s => getMitreTactic(s.mitre))
+      .filter(Boolean)
     return new Set(tacticGroups).size >= 3
   })()
   // 'generic' = vendor detection failed entirely, not just partial parse
@@ -1104,21 +1083,23 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
   // signals) but raise the floor when pattern recurrence or breadth warrants it.
   const hasCampaignTemporal = sortedTemporal.some(s => s.rule === 'CORRELATED_INDICATOR_ACTIVITY')
   const hasRepeatedTemporal = sortedTemporal.some(s => s.rule === 'REPEATED_INDICATOR')
-  let temporalFloorEntry = null
+  const temporalFloorEntries = []
 
   if (hasCampaignTemporal && finalSeverityRankMutable < (severityRank['HIGH'] ?? 3)) {
     const prevSeverity = finalSeverity
     finalSeverity = 'HIGH'
     finalSeverityRankMutable = severityRank['HIGH'] ?? 3
-    temporalFloorEntry = { type: 'floor', label: 'Severity elevated to HIGH minimum — correlated indicator activity across multiple assets', rule: 'CORRELATED_INDICATOR_ACTIVITY', from: prevSeverity, to: 'HIGH' }
+    temporalFloorEntries.push({ type: 'floor', label: 'Severity elevated to HIGH minimum — correlated indicator activity across multiple assets', rule: 'CORRELATED_INDICATOR_ACTIVITY', from: prevSeverity, to: 'HIGH' })
   } else if (hasRepeatedTemporal && finalSeverityRankMutable < (severityRank['MEDIUM'] ?? 2)) {
     const prevSeverity = finalSeverity
     finalSeverity = 'MEDIUM'
     finalSeverityRankMutable = severityRank['MEDIUM'] ?? 2
-    temporalFloorEntry = { type: 'floor', label: 'Severity elevated to MEDIUM minimum — repeated indicator in session', rule: 'REPEATED_INDICATOR', from: prevSeverity, to: 'MEDIUM' }
+    temporalFloorEntries.push({ type: 'floor', label: 'Severity elevated to MEDIUM minimum — repeated indicator in session', rule: 'REPEATED_INDICATOR', from: prevSeverity, to: 'MEDIUM' })
   }
 
-  // State-change temporal signals at CRITICAL can set CRITICAL floor
+  // State-change temporal signals at CRITICAL can set CRITICAL floor.
+  // Recorded as a separate trace entry even when a campaign/repeated floor
+  // already fired — the full severity elevation chain must remain visible.
   const hasCriticalTemporalSignal = sortedTemporal.some(
     s => !s.frequency && s.severity === 'CRITICAL'
   )
@@ -1127,13 +1108,13 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
     const prevSeverity = finalSeverity
     finalSeverity = 'CRITICAL'
     finalSeverityRankMutable = severityRank['CRITICAL'] ?? 4
-    temporalFloorEntry = {
+    temporalFloorEntries.push({
       type: 'floor',
       label: 'Severity elevated to CRITICAL — state-change temporal signal present',
       rule: sortedTemporal.find(s => !s.frequency && s.severity === 'CRITICAL')?.rule,
       from: prevSeverity,
       to: 'CRITICAL',
-    }
+    })
   }
 
   const classificationMap = {
@@ -1250,9 +1231,6 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
 
   const quality_factor = computeQualityFactor(normalizationScore, parseQuality, signals)
 
-  // Legacy confidence — kept for narrator prompt compatibility
-  const finalConfidence = behavioral_confidence
-
   // ── Layer summary ──────────────────────────────────────────────────────────
   const layer_summary = {
     behavioral:      sortedBehavioral.length,
@@ -1269,7 +1247,7 @@ function aggregateSignals(signals, parseQuality = 'structured', normalizationSco
     ...(severityWasFloored ? [{ type: 'floor', label: `Severity elevated to HIGH minimum — confirmed malicious IP present`, rule: 'ENRICHMENT_CONFIRMED_MALICIOUS', from: severityByRank[finalSeverityRank], to: finalSeverity }] : []),
     { type: 'classification', label: classification, rule: classificationSource?.rule, layer: classificationSource?.signal_layer, reason: classificationReason },
     { type: 'asset',         label: `Critical: ${assetIsCritical}`, value: assetIsCritical },
-    ...(temporalFloorEntry ? [temporalFloorEntry] : []),
+    ...temporalFloorEntries,
     { type: 'confidence',    label: `${behavioral_confidence}`, dominantConf, supportingContrib: Math.round(supportingContrib), temporalBoost: Math.round(temporalBoost), enrichmentAlignment, quality_factor },
     { type: 'layer_summary', label: `behavioral=${layer_summary.behavioral} enrichment=${layer_summary.enrichment} temporal=${layer_summary.temporal} dominant=${layer_summary.dominant_layer}${layer_summary.severity_boosted ? ' [severity boosted]' : ''}`, ...layer_summary },
     ...[...sortedBehavioral.slice(1), ...sortedEnrichment].map(s => ({ type: 'supporting', label: s.label, severity: s.severity, category: s.category, rule: s.rule, signal_layer: s.signal_layer }))
@@ -1570,52 +1548,6 @@ function buildDeterministicRecommendations(signals, affectedAsset, acsObject) {
   }
 
   return { recommendations: recommendations.slice(0, 5), provenance: provenance.slice(0, 5) }
-}
-
-function buildNarratorPrompt(sanitizedAlert, parsedContext, enrichmentJudgment, redisContext, isActiveCampaign, uniqueAssetCount, frequencyMultiplier, finalVerdict, acsObject = null) {
-  return `You are ARBITER's Narrator Layer. A deterministic engine has already classified this alert — your role is synthesis only.
-
-YOUR ROLE IS STRICTLY LIMITED TO:
-1. Writing one synthesis paragraph explaining the behavior and its significance
-2. Identifying the MITRE ATT&CK tactic and tactic name
-3. Populating the indicators field with technical facts extracted from the alert
-
-YOU MUST NOT produce: recommendations, mitre_id, mitre_name, severity overrides, or confidence overrides.
-
-═══ FINAL VERDICT (DETERMINISTIC — DO NOT OVERRIDE) ═══
-severity: ${finalVerdict.severity}
-classification: ${finalVerdict.classification}
-behavioral_confidence: ${finalVerdict.behavioral_confidence}
-quality_factor: ${finalVerdict.quality_factor}
-verdict_class: ${finalVerdict.verdictClass}
-asset_is_critical: ${finalVerdict.asset_is_critical}
-decision_trace: ${finalVerdict.decision_trace.slice(0,3).map(d => typeof d === 'object' ? d.label : d).join(' | ')}
-
-═══ STRUCTURED ALERT DATA ═══
-ALERT TYPE: ${parsedContext.alertType ?? 'Unknown'}
-VENDOR ORIGIN: ${acsObject?.meta?.vendor_origin ?? 'unknown'}
-NORMALIZATION SCORE: ${acsObject?.meta?.normalization_score ?? 0}
-RAW ALERT:
-${sanitizedAlert}
-
-PRE-PARSED FIELDS:
-${parsedContext.fields || 'No structured fields extracted'}
-
-ENRICHMENT JUDGMENT:
-${enrichmentJudgment.summary}
-VERDICT: ${enrichmentJudgment.judgment}
-
-${redisContext ? `TEMPORAL CORRELATION:\n${redisContext}\n${isActiveCampaign ? `ACTIVE CAMPAIGN: ${frequencyMultiplier} hits across ${uniqueAssetCount} unique assets.` : ''}` : ''}
-
-Return ONLY a JSON object. No markdown, no backticks, no preamble:
-{
-  "indicators": string[] (3-8 technical facts from the alert — EventCodes, binary names, arguments, asset names, timestamps),
-  "tactic": string (MITRE tactic name — e.g. "Credential Access", "Defense Evasion", "Execution"),
-  "mitre_tactic": string (must match tactic exactly)
-}
-
-RULES:
-- DO NOT include mitre_id, mitre_name, recommendations, recommendation_provenance, or reasoning`
 }
 
 // ── IP ENRICHMENT ─────────────────────────────────────────────────────────────
@@ -1919,9 +1851,6 @@ export async function POST(request) {
           }
         }
 
-        const sanitizedAlert = sanitizeAlertText(
-          alertText.length > 3000 ? alertText.slice(0, 3000) + '\n[TRUNCATED]' : alertText
-        )
         const ips = extractIPs(alertText)
 
         // ── PHASE 1: ENRICHMENT ──────────────────────────────────────────────
@@ -1966,33 +1895,13 @@ export async function POST(request) {
         const redisPatterns = redisContextResult?.patterns ?? []
         const redisContext = buildRedisContextSummary(redisHits)
 
-        // Filter redisContext to only include indicators present in the current alert
-        // Prevents session history from contaminating current alert recommendations
-        const currentAlertIPs = new Set(ips)
-        const currentAlertUsers = new Set([correlationUsername, acsObject?.acs_data?.user?.value ?? parsedAlert.username].filter(Boolean))
-
-        const filteredRedisHits = (redisHits ?? []).filter(h => {
-          if (h.key?.startsWith('ip:')) {
-            const ip = h.key.slice(3)
-            return currentAlertIPs.has(ip)
-          }
-          if (h.key?.startsWith('user:')) {
-            const user = h.key.slice(5)
-            return currentAlertUsers.has(user) ||
-                   currentAlertUsers.has(normalizeUsernameForCorrelation(user))
-          }
-          return false
-        })
-
-        const narratorRedisContext = buildRedisContextSummary(filteredRedisHits)
-
         const isCorrelated = !!(redisHits?.length)
 
         if (isCorrelated) {
           send(controller, 'correlation', { hits: redisHits, summary: redisContext, patterns: redisPatterns })
         }
 
-        // ── PHASE 2: LLM TRIAGE WITH FULL ENRICHMENT CONTEXT ────────────────
+        // ── PHASE 2: DETERMINISTIC TRIAGE ─────────────────────────────────────
         send(controller, 'status', { phase: 'analyzing', message: 'ARBITER is analyzing your alert...' })
 
         const frequencyMultiplier = redisHits?.reduce((max, h) => Math.max(max, h.count ?? 0), 0) ?? 0
@@ -2074,85 +1983,12 @@ export async function POST(request) {
           .map(([k, v]) => `${k}: ${v}`)
           .join('\n')
 
-        // Narrator is suppressed for states where LLM synthesis adds no value:
-        // NO_DETECTION has no signals to reason about; INSUFFICIENT_DATA has
-        // insufficient provenance for a reliable narrative.
-        const skipNarrator = finalVerdict.verdictClass === 'NO_DETECTION'
-          || finalVerdict.verdictClass === 'INSUFFICIENT_DATA'
-
-        const narratorFallback = (() => {
-          const mitreToTactic = {
-            'T1110.001': 'Credential Access', 'T1110': 'Credential Access',
-            'T1105': 'Command and Control', 'T1218.005': 'Defense Evasion',
-            'T1204.002': 'Execution', 'T1059.001': 'Execution',
-            'T1053.005': 'Persistence', 'T1543.003': 'Persistence',
-            'T1070.001': 'Defense Evasion', 'T1003.003': 'Credential Access',
-            'T1003.002': 'Credential Access', 'T1078': 'Initial Access',
-            'T1566.001': 'Initial Access',
-          }
-          const tactic = mitreToTactic[finalVerdict.deterministicMitre] ?? getMitreTactic(finalVerdict.deterministicMitre) ?? 'Unknown'
-          const dominantLabel = typeof finalVerdict.decision_trace[0] === 'object' ? finalVerdict.decision_trace[0].label : (finalVerdict.decision_trace[0] ?? '')
-          const asset = acsObject?.acs_data?.host?.value ?? parsedAlert.asset ?? 'the affected asset'
-          const behavioralCount = (finalVerdict.signals ?? []).filter(s => s.signal_layer === 'behavioral').length
-          const temporalNote = (finalVerdict.signals ?? []).some(s => s.signal_layer === 'temporal')
-            ? ` Temporal correlation indicates this indicator has been observed across multiple sessions.` : ''
-          return {
-            indicators:   finalVerdict.decision_trace.slice(0, 5).map(d => typeof d === 'object' ? d.label : d),
-            tactic,
-            mitre_tactic: tactic,
-            mitre_id:     finalVerdict.deterministicMitre ?? 'T0000',
-            mitre_name:   finalVerdict.deterministicMitre
-              ? getMitreName(finalVerdict.deterministicMitre)
-              : finalVerdict.classification ?? 'Unknown',
-          }
-        })()
-
-        function isValidNarratorOutput(obj) {
-          if (!obj || typeof obj !== 'object') return false
-          if (typeof obj.tactic !== 'string' || obj.tactic.trim().length === 0) return false
-          if (typeof obj.mitre_tactic !== 'string' || obj.mitre_tactic.trim().length === 0) return false
-          return true
-        }
-
-        let narrator = narratorFallback
-        if (!skipNarrator) {
-          try {
-            const groqStream = await groq.chat.completions.create({
-              model:       'llama-3.3-70b-versatile',
-              temperature: 0.1,
-              max_tokens:  2000,
-              stream:      false,
-              messages: [
-                {
-                  role: 'user',
-                  content: buildNarratorPrompt(
-                    sanitizedAlert,
-                    { alertType: parsedAlert.alertType, fields: parsedContext },
-                    enrichmentJudgment,
-                    narratorRedisContext,
-                    isActiveCampaign,
-                    uniqueAssetCount,
-                    frequencyMultiplier,
-                    finalVerdict,
-                    acsObject
-                  )
-                }
-              ]
-            })
-            const raw = groqStream.choices[0]?.message?.content ?? ''
-            const narratorOutput = (() => {
-              try {
-                const jsonMatch = raw.match(/\{[\s\S]*\}/)
-                if (!jsonMatch) return null
-                return JSON.parse(jsonMatch[0])
-              } catch { return null }
-            })()
-            narrator = isValidNarratorOutput(narratorOutput) ? narratorOutput : narratorFallback
-          } catch (groqErr) {
-            console.error('[ARBITER] Groq call failed, using deterministic fallback:', groqErr.message)
-            narrator = narratorFallback
-          }
-        }
+        // Deterministic indicator set — derived from the decision trace.
+        // No LLM call. Surfaces the engine's own decision path as the
+        // technical facts shown to the analyst.
+        const deterministicIndicators = finalVerdict.decision_trace
+          .slice(0, 5)
+          .map(d => typeof d === 'object' ? d.label : d)
 
         const { recommendations: deterministicRecommendations, provenance: deterministicProvenance }
           = buildDeterministicRecommendations(finalVerdict.signals ?? signals, null, acsObject)
@@ -2208,13 +2044,20 @@ export async function POST(request) {
             return 'UNKNOWN'
           })(),
           indicators: (() => {
-            const raw = narrator?.indicators ?? narratorFallback.indicators ?? []
-            const filtered = raw.filter(ind => {
+            const filtered = deterministicIndicators.filter(ind => {
               if (!ind || typeof ind !== 'string') return false
               const isTraceLabel = /^(CRITICAL|HIGH|MEDIUM|LOW)\s+across|^Critical:|^Confidence:|^Dominant:|^Supporting:/i.test(ind)
               return !isTraceLabel
             })
-            return filtered.length > 0 ? filtered : (parsedAlert.allEventCodes ? [`EventCode=${parsedAlert.allEventCodes}`, `Asset=${acsObject?.acs_data?.host?.value ?? parsedAlert.asset ?? 'UNKNOWN'}`, `User=${acsObject?.acs_data?.user?.value ?? parsedAlert.username ?? 'UNKNOWN'}`] : raw)
+            if (filtered.length > 0) return filtered
+            if (parsedAlert.allEventCodes) {
+              return [
+                `EventCode=${parsedAlert.allEventCodes}`,
+                `Asset=${acsObject?.acs_data?.host?.value ?? parsedAlert.asset ?? 'UNKNOWN'}`,
+                `User=${acsObject?.acs_data?.user?.value ?? parsedAlert.username ?? 'UNKNOWN'}`,
+              ]
+            }
+            return deterministicIndicators
           })(),
           mitre_id: (() => {
             if (finalVerdict.deterministicMitre) return finalVerdict.deterministicMitre
@@ -2227,13 +2070,7 @@ export async function POST(request) {
             if (fb) return getMitreName(fb.id) ?? finalVerdict.classification
             return finalVerdict.classification
           })(),
-          tactic: narrator?.tactic
-               ?? narratorFallback.tactic
-               ?? 'Unknown',
-          mitre_tactic: getMitreTactic(finalVerdict.deterministicMitre)
-                     ?? narrator?.tactic
-                     ?? narratorFallback.tactic
-                     ?? 'Unknown',
+          mitre_tactic: getMitreTactic(finalVerdict.deterministicMitre) ?? 'Unknown',
           recommendations:           deterministicRecommendations,
           recommendation_provenance: deterministicProvenance,
           verdict_class:             finalVerdict.verdictClass,
@@ -2248,9 +2085,7 @@ export async function POST(request) {
         triage.recommendations = finalRecommendations
         triage.recommendation_provenance = finalProvenance
 
-        // tactic (narrator free text) and mitre_tactic (deterministic lookup) may legitimately differ — no sync
-
-        const requiredTriageFields = ['severity','classification','confidence','asset_is_critical','evidence','indicators','tactic','mitre_id','mitre_name','mitre_tactic','recommendations']
+        const requiredTriageFields = ['severity','classification','confidence','asset_is_critical','evidence','indicators','mitre_id','mitre_name','mitre_tactic','recommendations']
         const missingFields = requiredTriageFields.filter(f => !(f in triage) || triage[f] === null || triage[f] === undefined)
         if (missingFields.length > 0) {
           console.error('[ARBITER] Output contract violation — missing fields:', missingFields)
@@ -2261,8 +2096,8 @@ export async function POST(request) {
               triage.recommendations = fallbackRecs
               triage.recommendation_provenance = fallbackProv
             }
-            else if (f === 'indicators') triage[f] = narratorFallback.indicators
-            else if (typeof triage[f] === 'undefined') triage[f] = narratorFallback[f] ?? null
+            else if (f === 'indicators') triage[f] = deterministicIndicators
+            else if (typeof triage[f] === 'undefined') triage[f] = null
           })
         }
 
@@ -2294,7 +2129,15 @@ export async function POST(request) {
         if (dominantSignalRule && signalRuleToClassification[dominantSignalRule]) {
           const allowedClassifications = signalRuleToClassification[dominantSignalRule]
           if (!allowedClassifications.includes(triage.classification)) {
+            const previousClassification = triage.classification
             triage.classification = allowedClassifications[0]
+            finalVerdict.decision_trace.push({
+              type: 'classification_override',
+              label: `Classification forced from "${previousClassification}" to "${allowedClassifications[0]}" by dominant signal ${dominantSignalRule}`,
+              rule: dominantSignalRule,
+              from: previousClassification,
+              to: allowedClassifications[0],
+            })
           }
         }
 

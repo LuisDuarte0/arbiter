@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import Header from './components/Header'
 import AlertQueue from './components/AlertQueue'
 import AnalysisPanel from './components/AnalysisPanel'
@@ -20,6 +20,9 @@ export default function Home() {
   const [indicatorCache, setIndicatorCache] = useState({})
   const [ipFilter, setIpFilter] = useState(null)
   const [redisInsights, setRedisInsights] = useState(null)
+  // Ref to always-current handleTriage, so the arbiter:load-log event handler
+  // can call the latest version without stale closure issues.
+  const handleTriageRef = useRef(null)
   const [sessionId, setSessionId] = useState(() => {
     if (typeof window === 'undefined') return 'server'
     const existing = sessionStorage.getItem('arbiter_session_id')
@@ -96,8 +99,9 @@ export default function Home() {
     setStreamedIPs([])
   }
 
-  async function handleTriage() {
-    if (!alertText.trim()) return
+  async function handleTriage(textOverride = null) {
+    const text = (typeof textOverride === 'string' ? textOverride : null) ?? (typeof alertText === 'string' ? alertText : '')
+    if (!text.trim()) return
     const newId = `ARB-${Date.now()}`
     setLoading(true)
     setError(null)
@@ -112,7 +116,7 @@ export default function Home() {
       const res = await fetch('/api/triage', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ alertText, sessionId }),
+        body: JSON.stringify({ alertText: text, sessionId }),
       })
 
       if (!res.ok || !res.body) {
@@ -194,7 +198,7 @@ export default function Home() {
               asset:          data.triage.affected_asset,
               confidence:     data.triage.confidence,
               fullResult:     data,
-              alertText,
+              alertText:      text,
             }
             setHistory(prev => {
               const updated = [newEntry, ...prev]
@@ -209,7 +213,7 @@ export default function Home() {
               const entry = {
                 id:         newId,
                 timestamp:  new Date().toISOString(),
-                alertText,
+                alertText:  text,
                 triage:     { ...data.triage, tactic: data.triage.mitre_tactic ?? 'Unknown', reasoning: undefined },
                 enrichment: data.enrichment,
                 ips:        data.ips,
@@ -236,6 +240,24 @@ export default function Home() {
       setLoadingPhase('')
     }
   }
+
+  // Keep handleTriageRef current on every render so the event handler below
+  // always calls the latest version (with current sessionId etc.)
+  handleTriageRef.current = handleTriage
+
+  // Auto-load + auto-triage when AboutModal dispatches arbiter:load-log.
+  // Using a ref callback avoids stale closure on handleTriage / sessionId.
+  useEffect(() => {
+    function onLoadLog(e) {
+      const { log } = e.detail
+      if (!log) return
+      setAlertText(log)
+      // 300ms: 160ms modal close animation + 140ms buffer for state to settle
+      setTimeout(() => handleTriageRef.current?.(log), 300)
+    }
+    window.addEventListener('arbiter:load-log', onLoadLog)
+    return () => window.removeEventListener('arbiter:load-log', onLoadLog)
+  }, [])
 
   const mainClass = [
     'arb-main',

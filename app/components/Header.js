@@ -3,93 +3,12 @@ import React, { useState, useEffect } from 'react'
 import AuditLog from './AuditLog'
 import AboutModal from './AboutModal'
 
-function CoreIndicator() {
-  const canvasRef = React.useRef(null)
+// ── KEY CONSTANTS ──────────────────────────────────────────────────────────────
+// Shared with AboutModal.js — must stay in sync if renamed
+const AWAITING_KEY       = 'arbiter_about_awaiting_return'
+// Set when user reaches the final page — only then does the button become normal
+const ABOUT_COMPLETED_KEY = 'arbiter_about_completed'
 
-  React.useEffect(() => {
-    const cv = canvasRef.current
-    if (!cv) return
-    const ctx = cv.getContext('2d')
-    let packets = [], flashes = [], spawn = 0, lastTs = null, rafId = null
-
-    function frame(ts) {
-      if (!cv.isConnected) return
-      const dt = lastTs ? Math.min(ts - lastTs, 50) : 0
-      lastTs = ts
-      spawn += dt
-
-      if (spawn > 280) {
-        spawn = 0
-        packets.push({
-          x: 0,
-          y: 6 + Math.random() * 20,
-          threat: Math.random() > 0.65,
-          speed: 0.055 + Math.random() * 0.025,
-          blocked: false
-        })
-      }
-
-      packets = packets.filter(p => p.x < 170)
-      flashes = flashes.filter(f => f.age < 0.4)
-
-      ctx.clearRect(0, 0, 160, 32)
-
-      // grid wall
-      ctx.fillStyle = 'rgba(16,185,129,0.06)'
-      ctx.fillRect(75, 2, 16, 28)
-      for (let r = 0; r < 4; r++) for (let c = 0; c < 2; c++) {
-        ctx.strokeStyle = 'rgba(16,185,129,0.18)'
-        ctx.lineWidth = 0.5
-        ctx.strokeRect(75 + c * 8, 2 + r * 7, 8, 7)
-      }
-      ctx.strokeStyle = 'rgba(16,185,129,0.6)'
-      ctx.lineWidth = 1
-      ctx.strokeRect(75, 2, 16, 28)
-
-      // impact flashes
-      flashes.forEach(f => {
-        f.age += dt * 0.001
-        const op = Math.max(0, 1 - f.age / 0.4)
-        ctx.fillStyle = `rgba(239,68,68,${op * 0.5})`
-        ctx.fillRect(68, f.y - 8, 12, 16)
-      })
-
-      // packets
-      packets.forEach(p => {
-        if (p.threat && p.x >= 73 && !p.blocked) {
-          p.blocked = true
-          flashes.push({ y: p.y, age: 0 })
-        }
-        if (p.blocked) return
-        p.x += dt * p.speed
-        for (let i = 1; i < 6; i++) {
-          const tx = p.x - i * 5
-          if (tx < 0) continue
-          ctx.fillStyle = p.threat
-            ? `rgba(239,68,68,${(1 - i / 6) * 0.35})`
-            : `rgba(16,185,129,${(1 - i / 6) * 0.35})`
-          ctx.beginPath(); ctx.arc(tx, p.y, 1.8, 0, Math.PI * 2); ctx.fill()
-        }
-        ctx.fillStyle = p.threat ? '#EF4444' : '#10B981'
-        ctx.beginPath(); ctx.arc(p.x, p.y, 2.8, 0, Math.PI * 2); ctx.fill()
-      })
-
-      rafId = requestAnimationFrame(frame)
-    }
-
-    rafId = requestAnimationFrame(frame)
-    return () => { if (rafId) cancelAnimationFrame(rafId) }
-  }, [])
-
-  return (
-    <canvas
-      ref={canvasRef}
-      width={160}
-      height={32}
-      style={{ display: 'block', borderRadius: '3px', alignSelf: 'center', marginTop: '2px' }}
-    />
-  )
-}
 
 
 function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
@@ -425,28 +344,64 @@ function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
   )
 }
 
-const AWAITING_KEY = 'arbiter_about_awaiting_return'
-
+// ── HEADER COMPONENT ──────────────────────────────────────────────────────────
 export default function Header({ activeId, result, onReset, onMitreFilter, redisInsights, onClearHistory }) {
-  const [auditOpen,          setAuditOpen]          = useState(false)
-  const [mitreOpen,          setMitreOpen]          = useState(false)
-  const [aboutOpen,          setAboutOpen]          = useState(false)
-  const [auditCount,         setAuditCount]         = useState(0)
+  const [auditOpen,  setAuditOpen]  = useState(false)
+  const [mitreOpen,  setMitreOpen]  = useState(false)
+  const [aboutOpen,  setAboutOpen]  = useState(false)
+  const [auditCount, setAuditCount] = useState(0)
+
+  // ── ABOUT button state machine ───────────────────────────────────────────────
+  // State A (default): button is the hero — amber, breathing. Persists until
+  // the user finishes the full walkthrough and reaches the final page.
+  // Not based on "first visit" — every session starts with ABOUT prominent.
+  // aboutCompleted: true only after the user has reached the final page.
+  const [aboutCompleted, setAboutCompleted] = useState(false)
+
+  // State B: true after user clicks LOAD AND ANALYZE in the modal.
+  // Cleared when the user reaches the final page (same event that sets completed).
+  // Drives the strong amber pulse — persists through all storytelling cards.
   const [aboutAwaitingReturn, setAboutAwaitingReturn] = useState(false)
 
+  // Hydrate from localStorage after mount — keeps SSR/client first render identical.
+  useEffect(() => {
+    try {
+      setAboutCompleted(!!localStorage.getItem(ABOUT_COMPLETED_KEY))
+      setAboutAwaitingReturn(!!localStorage.getItem(AWAITING_KEY))
+    } catch {}
+  }, [])
+
+  // Listen for same-tab awaiting-return events (from AboutModal.js)
+  // and cross-tab storage events
   useEffect(() => {
     function check() {
       try { setAboutAwaitingReturn(!!localStorage.getItem(AWAITING_KEY)) } catch {}
     }
     check()
     window.addEventListener('storage', check)
-    return () => window.removeEventListener('storage', check)
+    window.addEventListener('arbiter:about-awaiting', check)
+    return () => {
+      window.removeEventListener('storage', check)
+      window.removeEventListener('arbiter:about-awaiting', check)
+    }
+  }, [])
+
+  // When the user reaches the final page, AboutModal dispatches arbiter:about-completed.
+  // At that point: awaiting return clears AND button transitions to State C (normal).
+  useEffect(() => {
+    function onCompleted() {
+      setAboutAwaitingReturn(false)
+      setAboutCompleted(true)
+    }
+    window.addEventListener('arbiter:about-completed', onCompleted)
+    return () => window.removeEventListener('arbiter:about-completed', onCompleted)
   }, [])
 
   function openAbout() {
     setAboutOpen(true)
-    try { localStorage.removeItem(AWAITING_KEY) } catch {}
-    setAboutAwaitingReturn(false)
+    // Opening the modal does NOT change the button state.
+    // State A persists until the user finishes the walkthrough.
+    // State B (awaiting return) is cleared only when reaching the final page.
   }
 
   useEffect(() => {
@@ -459,8 +414,53 @@ export default function Header({ activeId, result, onReset, onMitreFilter, redis
     return () => window.removeEventListener('storage', updateCount)
   }, [result])
 
-  const ghostBtn = { background: 'none', border: '0.5px solid rgba(255,255,255,0.12)', borderRadius: '3px', color: 'var(--text-secondary)', fontFamily: 'var(--font-mono), monospace', fontSize: '9px', letterSpacing: '0.1em', cursor: 'pointer', padding: '5px 12px', transition: 'all 0.15s', whiteSpace: 'nowrap' }
+  // ── ABOUT button visual states ───────────────────────────────────────────────
+  const ghostBtn = {
+    background: 'none',
+    border: '0.5px solid rgba(255,255,255,0.12)',
+    borderRadius: '3px',
+    color: 'var(--text-secondary)',
+    fontFamily: 'var(--font-mono), monospace',
+    fontSize: '9px',
+    letterSpacing: '0.1em',
+    cursor: 'pointer',
+    padding: '5px 12px',
+    transition: 'all 0.15s',
+    whiteSpace: 'nowrap',
+  }
   const solidBtn = { ...ghostBtn, background: 'var(--amber)', border: '0.5px solid var(--amber)', color: '#080C14', fontWeight: '600' }
+
+  function getAboutBtnStyle() {
+    if (aboutAwaitingReturn) {
+      // State B — strong amber pulse: user must return here
+      return {
+        ...ghostBtn,
+        background: 'var(--amber)',
+        border: '0.5px solid var(--amber)',
+        color: '#080C14',
+        fontWeight: '700',
+        position: 'relative',
+        animation: 'arbAboutReturn 1.0s ease-in-out infinite',
+        transition: 'none',
+      }
+    }
+    if (!aboutCompleted) {
+      return {
+        ...ghostBtn,
+        background: 'rgba(245,158,11,0.07)',
+        border: '0.5px solid rgba(245,158,11,0.6)',
+        color: 'var(--amber)',
+        position: 'relative',
+        animation: 'arbAboutBreath 2.6s ease-in-out infinite',
+        transition: 'none',
+        fontWeight: '600',
+      }
+    }
+    // State C — walkthrough complete, same appearance as AUDIT LOG and MITRE ATT&CK
+    return { ...ghostBtn, position: 'relative' }
+  }
+
+  const isAboutSpecial = aboutAwaitingReturn || !aboutCompleted
 
   return (
     <>
@@ -468,6 +468,19 @@ export default function Header({ activeId, result, onReset, onMitreFilter, redis
         @keyframes arbSlideIn  { from{transform:translateX(100%)}to{transform:translateX(0)} }
         @keyframes arbFadeIn   { from{opacity:0}to{opacity:1} }
         @keyframes arbDotPulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.8)} }
+
+        /* State A — cold/first visit: border breathes in and out */
+        @keyframes arbAboutBreath {
+          0%,100% { box-shadow: 0 0 0 0 rgba(245,158,11,0);   border-color: rgba(245,158,11,0.4); }
+          50%      { box-shadow: 0 0 14px 3px rgba(245,158,11,0.15); border-color: rgba(245,158,11,0.9); }
+        }
+
+        /* State B — awaiting return: amber fill pulses with outer glow */
+        @keyframes arbAboutReturn {
+          0%,100% { opacity: 1;    box-shadow: 0 0 0 0   rgba(245,158,11,0.5);  }
+          50%      { opacity: 0.88; box-shadow: 0 0 18px 5px rgba(245,158,11,0.28); }
+        }
+
         .mitre-tl-row { display:flex;align-items:center;height:48px;border-bottom:0.5px solid #151E2E;position:relative; }
         .mitre-tl-row:last-child { border-bottom:none; }
         .mitre-tl-dot { width:10px;height:10px;border-radius:50%;border:1.5px solid;background:#080C14;transition:transform 0.15s;cursor:pointer;flex-shrink:0; }
@@ -516,19 +529,18 @@ export default function Header({ activeId, result, onReset, onMitreFilter, redis
             onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'var(--text-primary)' }}
             onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-secondary)' }}
           >MITRE ATT&CK</button>
-          <button style={{ ...ghostBtn, color: 'var(--text-muted)', border: '0.5px solid rgba(255,255,255,0.06)', position: 'relative' }} onClick={openAbout}
-            onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'var(--text-secondary)' }}
-            onMouseLeave={e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-muted)' }}
+
+          {/* ABOUT — three visual states: first-visit, awaiting-return, normal */}
+          <button
+            style={getAboutBtnStyle()}
+            onClick={openAbout}
+            {...(!isAboutSpecial ? {
+              onMouseEnter: e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = 'var(--text-secondary)' },
+              onMouseLeave: e => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-secondary)' },
+            } : {})}
           >
             ABOUT
-            {aboutAwaitingReturn && (
-              <span style={{ position: 'absolute', top: '3px', right: '3px', width: '5px', height: '5px', borderRadius: '50%', background: 'var(--amber)', animation: 'arbDotPulse 1.6s ease-in-out infinite', pointerEvents: 'none' }} />
-            )}
           </button>
-        </div>
-
-        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexShrink: 0 }}>
-          <CoreIndicator />
         </div>
 
       </header>

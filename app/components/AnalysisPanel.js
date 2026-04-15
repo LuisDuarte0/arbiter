@@ -433,7 +433,6 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
           <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.18em', textAlign: 'center', lineHeight: '1.8' }}>
             READY FOR TRIAGE<br/><span style={{ fontSize: '8px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.18em' }}>PASTE AN ALERT AND CLICK ANALYZE</span>
           </div>
-          <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'rgba(245,158,11,0.6)', letterSpacing: '0.08em', cursor: 'pointer', borderBottom: '0.5px solid rgba(245,158,11,0.3)', paddingBottom: '1px' }}>Open ABOUT</span>
         </div>
       )}
 

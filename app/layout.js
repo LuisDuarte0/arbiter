@@ -12,8 +12,8 @@ const jetbrainsMono = JetBrains_Mono({
 })
 
 export const metadata = {
-  title: 'ARBITER — AI Alert Triage',
-  description: 'AI-powered SOC alert triage and threat intelligence.',
+  title: 'ARBITER',
+  description: 'Deterministic SOC alert triage engine with MITRE ATT&CK mapping and threat intelligence enrichment.',
   icons: {
     icon: '/favicon.svg',
   },

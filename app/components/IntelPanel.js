@@ -109,7 +109,7 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
 
         {result && primaryIP && (
           <>
-            <div className="arb-section">
+            <div className="arb-section" style={{ paddingTop: '14px', paddingBottom: '14px' }}>
               <div className="arb-card-label" style={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em' }}>SOURCE IP</div>
               <div style={{ marginBottom: '8px' }}>
                 <div className="arb-ip-address" style={{ margin: '0 0 6px 0' }}>{primaryIP}</div>
@@ -160,7 +160,7 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
             </div>
 
             {abuse && (
-              <div className="arb-section">
+              <div className="arb-section" style={{ paddingTop: '14px', paddingBottom: '14px' }}>
                 <div className="arb-card-label" style={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em' }}>ABUSEIPDB SCORE</div>
                 <div className="arb-score-header">
                   <div><span className="arb-score-num">{abuse.score}</span><span className="arb-score-denom"> /100</span></div>
@@ -172,7 +172,7 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
             )}
 
             {vt && (
-              <div className="arb-section">
+              <div className="arb-section" style={{ paddingTop: '14px', paddingBottom: '14px' }}>
                 <div className="arb-card-label" style={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em' }}>VIRUSTOTAL</div>
                 <div className="arb-vt-row">
                   <div><span className="arb-vt-count">{vt.malicious}</span><span className="arb-vt-denom"> / {vt.total} engines</span></div>
@@ -184,7 +184,7 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
             )}
 
             {otx && (
-              <div className="arb-section">
+              <div className="arb-section" style={{ paddingTop: '14px', paddingBottom: '14px' }}>
                 <div className="arb-card-label" style={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em' }}>ALIENVAULT OTX</div>
                 <div className="arb-meta-row" style={{ marginBottom: '10px' }}>
                   <span className="arb-mk">PULSE COUNT</span>
@@ -198,7 +198,7 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
             )}
 
             {sortedIPs.length > 1 && (
-              <div className="arb-section">
+              <div className="arb-section" style={{ paddingTop: '14px', paddingBottom: '14px' }}>
                 <div className="arb-card-label" style={{ color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em' }}>ADDITIONAL IPs</div>
                 {sortedIPs.slice(1).map((ip, i) => {
                   const score = enrichment?.[ip]?.abuseipdb?.score
@@ -272,15 +272,21 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
                   ) : null
                 })()}
                 {correlation.hits.map((h, i) => {
-                  const age = Math.round((Date.now() - h.timestamp) / 60000)
+                  const ageMin = Math.round((Date.now() - h.timestamp) / 60000)
+                  const ageLabel = ageMin < 60
+                    ? `${ageMin}min ago`
+                    : ageMin < 1440
+                      ? `${Math.round(ageMin / 60)}h ago`
+                      : `${Math.round(ageMin / 1440)}d ago`
                   const rawKey = h.key?.split(':').slice(2).join(':') ?? ''
-                  const indicator = rawKey.startsWith('ip:') ? `IP ${rawKey.slice(3)}` : `User ${rawKey.slice(5)}`
+                  const rawValue = rawKey.startsWith('ip:') ? rawKey.slice(3) : rawKey.slice(5)
+                  const indicator = rawKey.startsWith('ip:') ? `IP ${rawValue}` : rawValue
                   return (
                     <div key={i} style={{ marginBottom: '10px', paddingBottom: '10px', borderBottom: i < correlation.hits.length - 1 ? '0.5px solid var(--border)' : 'none' }}>
                       <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '9px', color: '#E57373', marginBottom: '4px' }}>{indicator}</div>
                       <div className="arb-meta-row"><span className="arb-mk">SEEN</span><span className="arb-mv arb-mv-bad">{h.count}× IN LAST 24H</span></div>
                       <div className="arb-meta-row"><span className="arb-mk">LAST SEVERITY</span><span className="arb-mv">{h.severity}</span></div>
-                      <div className="arb-meta-row"><span className="arb-mk">LAST SEEN</span><span className="arb-mv">{age}min ago</span></div>
+                      <div className="arb-meta-row"><span className="arb-mk">LAST SEEN</span><span className="arb-mv">{ageLabel}</span></div>
                       {h.assets?.length > 0 && (
                         <div style={{ marginTop: '6px' }}>
                           <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '7px', color: 'var(--text-muted)', letterSpacing: '0.12em', marginBottom: '3px' }}>ASSET TRAIL</div>
@@ -316,18 +322,19 @@ export default function IntelPanel({ result, collapsed, onToggle, indicatorCache
                         {i < allCases.length - 1 && <div style={{ width: '1px', height: '14px', background: 'var(--border-bright)' }} />}
                       </div>
                       <div style={{ flex: 1 }}>
-                        <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '8px', color: 'var(--text-secondary)' }}>
-                          {(() => {
-                            const ts = parseInt(c.caseId.replace('ARB-',''))
-                            if(!isNaN(ts)) {
-                              const d = new Date(ts)
-                              return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
-                            }
-                            return c.caseId.slice(4, 17)
-                          })()}
-                        </div>
-                        <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '8px', color: 'var(--text-secondary)' }}>
-                          {c.indicator.includes('.') ? `IP ${c.indicator}` : `User ${c.indicator}`}
+                        <div style={{ fontFamily: 'var(--font-mono),monospace', fontSize: '8px', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                          <span style={{ color: 'var(--text-muted)' }}>
+                            {(() => {
+                              const ts = parseInt(c.caseId.replace('ARB-',''))
+                              if(!isNaN(ts)) {
+                                const d = new Date(ts)
+                                return d.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })
+                              }
+                              return c.caseId.slice(4, 17)
+                            })()}
+                          </span>
+                          <span style={{ color: 'var(--border-bright)', margin: '0 4px' }}>·</span>
+                          <span>{c.indicator.includes('.') ? c.indicator : c.indicator}</span>
                         </div>
                       </div>
                       <span className={`arb-badge arb-${c.severity?.toLowerCase()}`} style={{ fontSize: '7px', flexShrink: 0, whiteSpace: 'nowrap' }}>{c.severity}</span>

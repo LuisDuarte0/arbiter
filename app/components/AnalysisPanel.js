@@ -261,6 +261,162 @@ function AnalyzingLoader() {
   )
 }
 
+function generateStixBundle(result, triage) {
+  const uid = () => crypto.randomUUID()
+  const ts = new Date().toISOString()
+  const alertTs = ts
+
+  const arbiterId = `identity--${uid()}`
+  const attackPatternId = `attack-pattern--${uid()}`
+  const sightingId = `sighting--${uid()}`
+
+  const objects = []
+
+  // ARBITER as the tool that produced the sighting
+  objects.push({
+    type: 'identity',
+    spec_version: '2.1',
+    id: arbiterId,
+    created: ts,
+    modified: ts,
+    name: 'ARBITER',
+    identity_class: 'system',
+    description: 'Deterministic log triage engine — ACS v2 / Model E',
+  })
+
+  const assetId = `identity--${uid()}`
+  objects.push({
+    type: 'identity',
+    spec_version: '2.1',
+    id: assetId,
+    created: ts,
+    modified: ts,
+    name: triage.affected_asset ?? 'UNKNOWN',
+    identity_class: 'system',
+    description: triage.asset_is_critical ? 'Critical asset' : 'Standard asset',
+  })
+
+  // MITRE ATT&CK technique
+  objects.push({
+    type: 'attack-pattern',
+    spec_version: '2.1',
+    id: attackPatternId,
+    created: ts,
+    modified: ts,
+    created_by_ref: arbiterId,
+    name: triage.mitre_name ?? triage.mitre_id,
+    external_references: [{
+      source_name: 'mitre-attack',
+      external_id: triage.mitre_id,
+      url: `https://attack.mitre.org/techniques/${triage.mitre_id?.replace('.', '/')}`,
+    }],
+    kill_chain_phases: triage.mitre_tactic ? [{
+      kill_chain_name: 'mitre-attack',
+      phase_name: triage.mitre_tactic.toLowerCase().replace(/\s+/g, '-'),
+    }] : [],
+  })
+
+  // Sighting — core object, carries all ARBITER-specific data as x_arbiter_* props
+  const sighting = {
+    type: 'sighting',
+    spec_version: '2.1',
+    id: sightingId,
+    created: ts,
+    modified: ts,
+    created_by_ref: arbiterId,
+    first_seen: alertTs,
+    last_seen: alertTs,
+    count: 1,
+    sighting_of_ref: attackPatternId,
+    where_sighted_refs: [assetId],
+    confidence: triage.behavioral_confidence ?? triage.confidence ?? 0,
+    // ARBITER-specific custom properties
+    x_arbiter_verdict_class: triage.verdict_class ?? result?.meta?.verdictClass ?? 'UNKNOWN',
+    x_arbiter_verdict_reliability: triage.verdict_reliability_class ?? result?.meta?.verdictReliabilityClass ?? 'UNKNOWN',
+    x_arbiter_severity: triage.severity,
+    x_arbiter_classification: triage.classification,
+    x_arbiter_affected_asset: triage.affected_asset,
+    x_arbiter_asset_is_critical: triage.asset_is_critical ?? false,
+    x_arbiter_parse_quality: result?.meta?.parseQuality ?? 'unknown',
+    x_arbiter_signal_count: (result?.meta?.signals ?? []).length,
+    x_arbiter_correlated: result?.meta?.correlated ?? false,
+    x_arbiter_behavioral_signals: (result?.meta?.signals ?? []).map(s => ({
+      rule: s.rule ?? s.type ?? 'unknown',
+      weight: s.weight ?? 0,
+      layer: s.layer ?? 'behavioral',
+    })),
+  }
+  objects.push(sighting)
+
+  // Conditional: indicator + observed-data + ipv4-addr when confirmed malicious IP exists
+  const ips = result?.ips ?? []
+  const enrichment = result?.enrichment ?? {}
+  const maliciousIp = ips.find(ip => (enrichment[ip]?.abuseipdb?.score ?? 0) >= 80)
+
+  if (maliciousIp) {
+    const ipAddrId = `ipv4-addr--${uid()}`
+    const indicatorId = `indicator--${uid()}`
+    const observedDataId = `observed-data--${uid()}`
+    const relId = `relationship--${uid()}`
+    const ipData = enrichment[maliciousIp]
+
+    objects.push({
+      type: 'ipv4-addr',
+      spec_version: '2.1',
+      id: ipAddrId,
+      value: maliciousIp,
+    })
+
+    objects.push({
+      type: 'indicator',
+      spec_version: '2.1',
+      id: indicatorId,
+      created: ts,
+      modified: ts,
+      created_by_ref: arbiterId,
+      name: `Malicious IP: ${maliciousIp}`,
+      pattern: `[ipv4-addr:value = '${maliciousIp}']`,
+      pattern_type: 'stix',
+      valid_from: alertTs,
+      confidence: ipData?.abuseipdb?.score ?? 80,
+      labels: ['malicious-activity'],
+      x_arbiter_abuseipdb_score: ipData?.abuseipdb?.score,
+      x_arbiter_is_tor_node: ipData?.abuseipdb?.isTorNode ?? false,
+    })
+
+    objects.push({
+      type: 'observed-data',
+      spec_version: '2.1',
+      id: observedDataId,
+      created: ts,
+      modified: ts,
+      created_by_ref: arbiterId,
+      first_observed: alertTs,
+      last_observed: alertTs,
+      number_observed: 1,
+      object_refs: [ipAddrId],
+    })
+
+    objects.push({
+      type: 'relationship',
+      spec_version: '2.1',
+      id: relId,
+      created: ts,
+      modified: ts,
+      created_by_ref: arbiterId,
+      relationship_type: 'indicates',
+      source_ref: indicatorId,
+      target_ref: attackPatternId,
+    })
+  }
+
+  return {
+    type: 'bundle',
+    id: `bundle--${uid()}`,
+    objects,
+  }
+}
+
 export default function AnalysisPanel({ alertText, setAlertText, result, loading, loadingPhase, error, onTriage, onReset }) {
   const [containmentOpen, setContainmentOpen] = useState(false)
   const [traceOpen, setTraceOpen] = useState(true)
@@ -549,7 +705,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
             </div>
             <div style={S.verdictRight}>
               <div style={S.confBlock}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px', justifyContent: 'flex-end' }}>
                   <span style={S.confBig}>{displayConfidence}</span>
                   <span style={S.confUnit}>%</span>
                 </div>
@@ -661,10 +817,6 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                       <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>
                         {(result?.meta?.signals ?? []).length} SIGNAL{(result?.meta?.signals ?? []).length !== 1 ? 'S' : ''}
                       </span>
-                      <span style={{ color: 'rgba(245,158,11,0.3)', fontSize: '10px' }}>·</span>
-                      <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(245,158,11,0.9)', letterSpacing: '0.06em', fontWeight: '600' }}>
-                        {displayConfidence}%
-                      </span>
                     </div>
                   )}
                   {traceOpen && (
@@ -709,17 +861,19 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                       ⬡ FORENSIC
                     </button>
                   )}
-                  {!traceOpen && (
-                    <span style={{
-                      fontFamily: 'var(--font-mono), monospace',
-                      fontSize: '8px',
-                      color: 'rgba(245,158,11,0.8)',
-                      letterSpacing: '0.08em',
-                      background: 'rgba(245,158,11,0.08)',
-                      border: '0.5px solid rgba(245,158,11,0.25)',
-                      borderRadius: '2px',
-                      padding: '2px 8px',
-                    }}>SHOW REASONING</span>
+                  {result && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        const bundle = generateStixBundle(result, triage)
+                        navigator.clipboard.writeText(JSON.stringify(bundle, null, 2))
+                      }}
+                      style={{ background: 'rgba(100,181,246,0.08)', border: '0.5px solid rgba(100,181,246,0.35)', borderRadius: '3px', color: 'rgba(100,181,246,0.85)', fontFamily: 'var(--font-mono), monospace', fontSize: '8px', letterSpacing: '0.08em', cursor: 'pointer', padding: '4px 10px', whiteSpace: 'nowrap', transition: 'all 0.15s' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(100,181,246,0.16)'; e.currentTarget.style.borderColor = 'rgba(100,181,246,0.65)'; e.currentTarget.style.color = '#64B5F6' }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'rgba(100,181,246,0.08)'; e.currentTarget.style.borderColor = 'rgba(100,181,246,0.35)'; e.currentTarget.style.color = 'rgba(100,181,246,0.85)' }}
+                    >
+                      ⬡ STIX
+                    </button>
                   )}
                   <span style={{
                     fontFamily: 'var(--font-mono), monospace',
@@ -836,10 +990,10 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
               ))}
             </div>
             <button
-              style={{ display: 'flex', alignItems: 'center', gap: '10px', background: isUrgent ? 'var(--red)' : 'var(--amber)', border: 'none', borderRadius: '4px', padding: '9px 18px', cursor: 'pointer', flexShrink: 0, animation: isUrgent && isSurfaceSafe ? 'arbBtnPulse 2s ease-in-out infinite' : 'none' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '10px', background: isSurfaceSafe ? 'var(--amber)' : 'var(--red)', border: 'none', borderRadius: '4px', padding: '9px 18px', cursor: 'pointer', flexShrink: 0, animation: !isSurfaceSafe && isUrgent ? 'arbBtnPulse 2s ease-in-out infinite' : 'none' }}
               onClick={() => setContainmentOpen(true)}
               onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.animation = 'none' }}
-              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.animation = isUrgent && isSurfaceSafe ? 'arbBtnPulse 2s ease-in-out infinite' : 'none' }}
+              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.animation = !isSurfaceSafe && isUrgent ? 'arbBtnPulse 2s ease-in-out infinite' : 'none' }}
             >
               <style>{`@keyframes arbBtnPulse { 0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0.4)}50%{box-shadow:0 0 0 6px rgba(239,68,68,0)} } @keyframes arbTraceReveal { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }`}</style>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#080C14" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -871,9 +1025,6 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                 <span>{triage.mitre_tactic}</span>
                 <span style={{ color: 'var(--border-bright)' }}>·</span>
                 <span style={{ color: 'var(--amber)' }}>{triage.mitre_id}</span>
-                {result?.meta?.processingTime && (
-                  <><span style={{ color: 'var(--border-bright)' }}>·</span><span style={{ color: 'var(--text-muted)' }}>{(result.meta.processingTime / 1000).toFixed(1)}s</span></>
-                )}
                 {(result?.meta?.signals?.length ?? 0) > 0 && (
                   <><span style={{ color: 'var(--border-bright)' }}>·</span><span style={{ color: 'var(--text-muted)' }}>{result.meta.signals.length} SIGNAL{result.meta.signals.length !== 1 ? 'S' : ''}</span></>
                 )}
@@ -904,7 +1055,7 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
             </div>
             <div style={S.verdictRight}>
               <div style={S.confBlock}>
-                <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px' }}>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '4px', justifyContent: 'flex-end' }}>
                   <span style={S.confBig}>{displayConfidence}</span>
                   <span style={S.confUnit}>%</span>
                 </div>
@@ -1035,10 +1186,6 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                       <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.35)', letterSpacing: '0.06em' }}>
                         {(result?.meta?.signals ?? []).length} SIGNAL{(result?.meta?.signals ?? []).length !== 1 ? 'S' : ''}
                       </span>
-                      <span style={{ color: 'rgba(245,158,11,0.3)', fontSize: '10px' }}>·</span>
-                      <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(245,158,11,0.9)', letterSpacing: '0.06em', fontWeight: '600' }}>
-                        {displayConfidence}%
-                      </span>
                     </div>
                   )}
                   {traceOpen && (
@@ -1083,17 +1230,19 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
                       ⬡ FORENSIC
                     </button>
                   )}
-                  {!traceOpen && (
-                    <span style={{
-                      fontFamily: 'var(--font-mono), monospace',
-                      fontSize: '8px',
-                      color: 'rgba(245,158,11,0.8)',
-                      letterSpacing: '0.08em',
-                      background: 'rgba(245,158,11,0.08)',
-                      border: '0.5px solid rgba(245,158,11,0.25)',
-                      borderRadius: '2px',
-                      padding: '2px 8px',
-                    }}>SHOW REASONING</span>
+                  {result && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        const bundle = generateStixBundle(result, triage)
+                        navigator.clipboard.writeText(JSON.stringify(bundle, null, 2))
+                      }}
+                      style={{ background: 'rgba(100,181,246,0.08)', border: '0.5px solid rgba(100,181,246,0.35)', borderRadius: '3px', color: 'rgba(100,181,246,0.85)', fontFamily: 'var(--font-mono), monospace', fontSize: '8px', letterSpacing: '0.08em', cursor: 'pointer', padding: '4px 10px', whiteSpace: 'nowrap', transition: 'all 0.15s' }}
+                      onMouseEnter={e => { e.currentTarget.style.background = 'rgba(100,181,246,0.16)'; e.currentTarget.style.borderColor = 'rgba(100,181,246,0.65)'; e.currentTarget.style.color = '#64B5F6' }}
+                      onMouseLeave={e => { e.currentTarget.style.background = 'rgba(100,181,246,0.08)'; e.currentTarget.style.borderColor = 'rgba(100,181,246,0.35)'; e.currentTarget.style.color = 'rgba(100,181,246,0.85)' }}
+                    >
+                      ⬡ STIX
+                    </button>
                   )}
                   <span style={{
                     fontFamily: 'var(--font-mono), monospace',
@@ -1212,10 +1361,10 @@ export default function AnalysisPanel({ alertText, setAlertText, result, loading
               ))}
             </div>
             <button
-              style={{ display: 'flex', alignItems: 'center', gap: '10px', background: isUrgent ? 'var(--red)' : 'var(--amber)', border: 'none', borderRadius: '4px', padding: '9px 18px', cursor: 'pointer', flexShrink: 0, animation: isUrgent && isSurfaceSafe ? 'arbBtnPulse 2s ease-in-out infinite' : 'none' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '10px', background: isSurfaceSafe ? 'var(--amber)' : 'var(--red)', border: 'none', borderRadius: '4px', padding: '9px 18px', cursor: 'pointer', flexShrink: 0, animation: !isSurfaceSafe && isUrgent ? 'arbBtnPulse 2s ease-in-out infinite' : 'none' }}
               onClick={() => setContainmentOpen(true)}
               onMouseEnter={e => { e.currentTarget.style.opacity = '0.85'; e.currentTarget.style.animation = 'none' }}
-              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.animation = isUrgent && isSurfaceSafe ? 'arbBtnPulse 2s ease-in-out infinite' : 'none' }}
+              onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.animation = !isSurfaceSafe && isUrgent ? 'arbBtnPulse 2s ease-in-out infinite' : 'none' }}
             >
               <style>{`@keyframes arbBtnPulse { 0%,100%{box-shadow:0 0 0 0 rgba(239,68,68,0.4)}50%{box-shadow:0 0 0 6px rgba(239,68,68,0)} } @keyframes arbTraceReveal { from{opacity:0;transform:translateY(-6px)} to{opacity:1;transform:translateY(0)} }`}</style>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#080C14" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

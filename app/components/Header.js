@@ -99,7 +99,7 @@ function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
               { label: 'REDIS 24H', value: localRedisInsights?.totalHits ?? 0, color: (localRedisInsights?.totalHits ?? 0) > 0 ? 'var(--red)' : 'var(--text-muted)' },
               { label: 'TECHNIQUES', value: techList.length, color: 'var(--amber)' },
               { label: 'CRITICAL', value: crit, color: 'var(--red)' },
-              { label: 'HIGH', value: high, color: '#F59E0B' },
+              { label: 'HIGH', value: high, color: 'var(--amber)' },
             ].map(s => (
               <div key={s.label}>
                 <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '7px', color: 'rgba(255,255,255,0.45)', letterSpacing: '0.12em', marginBottom: '2px' }}>{s.label}</div>
@@ -113,24 +113,74 @@ function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
                   total > 0 && s.c > 0 ? <div key={i} style={{ flex: s.c, background: s.col }} /> : null
                 ))}
               </div>
-              <div style={{ display: 'flex', gap: '8px' }}>
-                {[['CRIT', crit, '#EF4444'], ['HIGH', high, '#F59E0B'], ['MED', med, '#EAB308'], ['LOW', low, '#6B7280']].map(([l, v, c]) => (
-                  <span key={l} style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: c, letterSpacing: '0.06em' }}>{l}: {v}</span>
-                ))}
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: crit > 0 ? 'var(--red)' : 'var(--text-muted)' }}>CRIT: {crit}</span>
+                <span style={{ color: 'var(--border-bright)', fontSize: '10px' }}>·</span>
+                <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: high > 0 ? 'var(--amber)' : 'var(--text-muted)' }}>HIGH: {high}</span>
+                <span style={{ color: 'var(--border-bright)', fontSize: '10px' }}>·</span>
+                <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: med > 0 ? '#EAB308' : 'var(--text-muted)' }}>MED: {med}</span>
+                <span style={{ color: 'var(--border-bright)', fontSize: '10px' }}>·</span>
+                <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-muted)' }}>LOW: {low}</span>
               </div>
             </div>
           </div>
         </div>
-        <button onClick={onClose} style={{ background: 'none', border: '0.5px solid var(--border-bright)', borderRadius: '3px', color: 'var(--text-muted)', cursor: 'pointer', padding: '6px 14px', fontFamily: 'var(--font-mono), monospace', fontSize: '9px', letterSpacing: '0.1em', transition: 'all 0.15s' }}
-          onMouseEnter={e => { e.currentTarget.style.color = 'var(--text-primary)'; e.currentTarget.style.borderColor = 'var(--text-muted)' }}
-          onMouseLeave={e => { e.currentTarget.style.color = 'var(--text-muted)'; e.currentTarget.style.borderColor = 'var(--border-bright)' }}
-        >CLOSE ✕</button>
+        <button
+          onClick={onClose}
+          style={{
+            background: 'none',
+            border: '0.5px solid rgba(239,68,68,0.5)',
+            borderRadius: '3px',
+            color: 'rgba(239,68,68,0.8)',
+            fontFamily: 'var(--font-mono), monospace',
+            fontSize: '12px',
+            cursor: 'pointer',
+            padding: '3px 9px',
+            lineHeight: 1,
+            transition: 'all 0.15s',
+            flexShrink: 0,
+          }}
+          onMouseEnter={e => {
+            e.currentTarget.style.background = 'rgba(239,68,68,0.12)'
+            e.currentTarget.style.borderColor = 'rgba(239,68,68,0.9)'
+            e.currentTarget.style.color = '#EF4444'
+          }}
+          onMouseLeave={e => {
+            e.currentTarget.style.background = 'none'
+            e.currentTarget.style.borderColor = 'rgba(239,68,68,0.5)'
+            e.currentTarget.style.color = 'rgba(239,68,68,0.8)'
+          }}
+        >✕</button>
       </div>
 
       {/* TOGGLE */}
       <div style={{ padding: '10px 32px', borderBottom: '0.5px solid var(--border)', display: 'flex', gap: '4px', background: 'var(--bg-panel)', flexShrink: 0 }}>
-        <button className={`mitre-toggle-btn${view === 'timeline' ? ' active' : ''}`} onClick={() => setView('timeline')}>ATTACK PROGRESSION</button>
-        <button className={`mitre-toggle-btn${view === 'aggregate' ? ' active' : ''}`} onClick={() => setView('aggregate')}>TECHNIQUE SUMMARY</button>
+        <button onClick={() => setView('timeline')} style={{
+          background: view === 'timeline' ? 'rgba(245,158,11,0.12)' : 'none',
+          border: view === 'timeline' ? '0.5px solid rgba(245,158,11,0.6)' : '0.5px solid var(--border)',
+          borderRadius: '3px',
+          color: view === 'timeline' ? 'var(--amber)' : 'var(--text-muted)',
+          fontFamily: 'var(--font-mono), monospace',
+          fontSize: '8px',
+          letterSpacing: '0.1em',
+          cursor: 'pointer',
+          padding: '4px 12px',
+          fontWeight: view === 'timeline' ? '600' : '400',
+          transition: 'all 0.15s',
+        }}>ATTACK PROGRESSION</button>
+        <button onClick={() => setView('aggregate')} style={{
+          background: view === 'aggregate' ? 'rgba(245,158,11,0.12)' : 'none',
+          border: view === 'aggregate' ? '0.5px solid rgba(245,158,11,0.6)' : '0.5px solid var(--border)',
+          borderRadius: '3px',
+          color: view === 'aggregate' ? 'var(--amber)' : 'var(--text-muted)',
+          fontFamily: 'var(--font-mono), monospace',
+          fontSize: '8px',
+          letterSpacing: '0.1em',
+          cursor: 'pointer',
+          padding: '4px 12px',
+          fontWeight: view === 'aggregate' ? '600' : '400',
+          transition: 'all 0.15s',
+        }}>TECHNIQUE SUMMARY</button>
       </div>
 
       {/* BODY */}
@@ -143,7 +193,7 @@ function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
           {view === 'timeline' && (
             <div style={{ padding: '24px 32px' }}>
               <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em', marginBottom: '20px' }}>
-                TECHNIQUE × TIME — each point is a detected event · hover for details
+                TECHNIQUE × TIME — hover to inspect
               </div>
 
               {valid.length === 0 ? (
@@ -201,11 +251,11 @@ function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
                   </div>
 
                   {/* LEGEND */}
-                  <div style={{ display: 'flex', gap: '16px', marginTop: '20px', paddingTop: '16px', borderTop: '0.5px solid var(--border)' }}>
+                  <div style={{ display: 'flex', gap: '20px', marginTop: '20px', paddingTop: '16px', borderTop: '0.5px solid var(--border)' }}>
                     {[['CRITICAL', '#EF4444'], ['HIGH', '#F59E0B'], ['MEDIUM', '#EAB308'], ['LOW', '#6B7280']].map(([l, c]) => (
                       <div key={l} style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                         <div style={{ width: '8px', height: '8px', borderRadius: '50%', border: `1.5px solid ${c}`, background: c + '22' }} />
-                        <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.08em' }}>{l}</span>
+                        <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.4)', letterSpacing: '0.08em' }}>{l}</span>
                       </div>
                     ))}
                   </div>
@@ -248,21 +298,79 @@ function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
 
               {/* CORRELATED INTELLIGENCE */}
               <div style={{ marginTop: '28px', paddingTop: '18px', borderTop: '0.5px solid var(--border)' }}>
-                <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em', marginBottom: '8px' }}>CORRELATED INTELLIGENCE (24H)</div>
-                <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.35)', lineHeight: '1.6', marginBottom: '10px' }}>
-                  Cross-session memory from Redis — indicators seen across multiple analyses in the last 24 hours.
+                <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em', marginBottom: '20px' }}>
+                  CORRELATED INTELLIGENCE (24H REDIS MEMORY) — CLICK TO FILTER HISTORY
                 </div>
                 {localRedisInsights?.indicators?.length > 0 ? (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
                     {localRedisInsights.indicators.slice(0, 8).map((ind, i) => {
-                      const label = ind.key?.startsWith('ip:') ? ind.key.slice(3) : ind.key?.slice(5)
+                      const isIp = ind.key?.startsWith('ip:')
+                      const label = isIp ? ind.key.slice(3) : ind.key?.slice(5)?.replace(/_/g, ' ')
+                      const labelColor = isIp
+                        ? (ind.count >= 3 ? 'var(--red)' : '#64B5F6')
+                        : (ind.count >= 3 ? '#E57373' : '#CE93D8')
+                      const assetList = (ind.assets ?? []).join(', ')
+                      const assetDisplay = assetList.length > 45 ? assetList.slice(0, 45) + '…' : assetList
+                      const severityColor = ind.severity === 'CRITICAL' ? 'var(--red)'
+                        : ind.severity === 'HIGH' ? 'var(--amber)'
+                        : 'var(--text-muted)'
                       return (
-                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '6px 10px', background: ind.count >= 2 ? 'rgba(229,115,115,0.08)' : 'var(--bg-card)', border: '0.5px solid var(--border-bright)', borderRadius: '3px' }}>
-                          <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: ind.count >= 3 ? '#E57373' : 'var(--text-secondary)' }}>{label}</span>
-                          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                            <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--text-muted)' }}>{(ind.assets ?? []).join(', ').slice(0, 30)}</span>
-                            <span style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', fontWeight: '600', color: ind.count >= 3 ? '#E57373' : 'var(--amber)' }}>{ind.count}×</span>
+                        <div
+                          key={i}
+                          style={{
+                            padding: '8px 10px',
+                            marginBottom: '5px',
+                            background: ind.count >= 3 ? 'rgba(229,115,115,0.06)' : 'var(--bg-card)',
+                            border: '0.5px solid var(--border-bright)',
+                            borderRadius: '3px',
+                            cursor: 'pointer',
+                            transition: 'background 0.15s, border-color 0.15s',
+                          }}
+                          onMouseEnter={e => {
+                            e.currentTarget.style.background = ind.count >= 3
+                              ? 'rgba(229,115,115,0.12)'
+                              : 'rgba(255,255,255,0.04)'
+                            e.currentTarget.style.borderColor = labelColor
+                          }}
+                          onMouseLeave={e => {
+                            e.currentTarget.style.background = ind.count >= 3
+                              ? 'rgba(229,115,115,0.06)'
+                              : 'var(--bg-card)'
+                            e.currentTarget.style.borderColor = 'var(--border-bright)'
+                          }}
+                        >
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
+                            <span style={{
+                              fontFamily: 'var(--font-mono), monospace',
+                              fontSize: '10px',
+                              fontWeight: '600',
+                              color: labelColor,
+                              letterSpacing: '0.04em',
+                            }}>{label}</span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                              <span style={{
+                                fontFamily: 'var(--font-mono), monospace',
+                                fontSize: '8px',
+                                color: severityColor,
+                                letterSpacing: '0.06em',
+                              }}>{ind.severity}</span>
+                              <span style={{
+                                fontFamily: 'var(--font-mono), monospace',
+                                fontSize: '11px',
+                                fontWeight: '600',
+                                color: ind.count >= 3 ? '#E57373' : 'var(--amber)',
+                              }}>{ind.count}×</span>
+                            </div>
                           </div>
+                          {assetDisplay && (
+                            <div style={{
+                              fontFamily: 'var(--font-mono), monospace',
+                              fontSize: '8px',
+                              color: 'var(--text-muted)',
+                              letterSpacing: '0.04em',
+                              lineHeight: 1.4,
+                            }}>{assetDisplay}</div>
+                          )}
                         </div>
                       )
                     })}
@@ -301,14 +409,14 @@ function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
               <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em', marginBottom: '14px' }}>ATTACK NARRATIVE</div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
                 {[
-                  { col: '#F59E0B', text: `${uniqueTactics.length} tactic${uniqueTactics.length !== 1 ? 's' : ''} observed`, sub: uniqueTactics.slice(0, 2).join(', ') + (uniqueTactics.length > 2 ? ` +${uniqueTactics.length - 2}` : '') },
-                  { col: '#EF4444', text: `${crit} CRITICAL event${crit !== 1 ? 's' : ''} detected`, sub: null },
-                  { col: '#334055', text: `First detection`, sub: firstEvent ? fmt(firstEvent.timestamp) : '—' },
-                  { col: '#334055', text: `Active duration`, sub: durationMin > 0 ? `${durationMin} min` : '<1 min' },
-                  { col: '#1E2D44', text: `${uniqueAssets.length} unique asset${uniqueAssets.length !== 1 ? 's' : ''} targeted`, sub: null },
+                  { text: `${uniqueTactics.length} tactic${uniqueTactics.length !== 1 ? 's' : ''} observed`, sub: uniqueTactics.slice(0, 2).join(', ') + (uniqueTactics.length > 2 ? ` +${uniqueTactics.length - 2}` : '') },
+                  { text: `${crit} CRITICAL event${crit !== 1 ? 's' : ''} detected`, sub: null },
+                  { text: `First detection`, sub: firstEvent ? fmt(firstEvent.timestamp) : '—' },
+                  { text: `Active duration`, sub: durationMin > 0 ? `${durationMin} min` : '<1 min' },
+                  { text: `${uniqueAssets.length} unique asset${uniqueAssets.length !== 1 ? 's' : ''} targeted`, sub: null },
                 ].map((item, i) => (
                   <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
-                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: item.col, flexShrink: 0, marginTop: '4px' }} />
+                    <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: i === 0 ? 'var(--amber)' : i === 1 ? (item.text.includes('CRITICAL') ? '#E57373' : 'var(--amber)') : 'var(--text-muted)', flexShrink: 0, marginTop: '4px' }} />
                     <div>
                       <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'var(--text-secondary)', letterSpacing: '0.04em' }}>{item.text}</div>
                       {item.sub && <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '8px', color: 'var(--text-muted)', marginTop: '1px', letterSpacing: '0.04em' }}>{item.sub}</div>}
@@ -489,8 +597,6 @@ export default function Header({ activeId, result, onReset, onMitreFilter, redis
         .mitre-tl-dot.high     { border-color:#F59E0B;background:rgba(245,158,11,0.15); }
         .mitre-tl-dot.medium   { border-color:#EAB308;background:rgba(234,179,8,0.15); }
         .mitre-tl-dot.low      { border-color:#6B7280;background:rgba(107,114,128,0.15); }
-        .mitre-toggle-btn { background:none;border:0.5px solid #1E2D44;border-radius:3px;color:#334055;font-family:monospace;font-size:8px;letter-spacing:0.1em;cursor:pointer;padding:4px 12px;transition:all 0.15s; }
-        .mitre-toggle-btn.active { background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.4);color:#F59E0B; }
       `}</style>
 
       <header className="arb-header" style={{ justifyContent: 'space-between', position: 'relative' }}>

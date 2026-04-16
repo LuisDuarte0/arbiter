@@ -11,7 +11,7 @@ const ABOUT_COMPLETED_KEY = 'arbiter_about_completed'
 
 
 
-function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
+function MitrePanel({ onClose, onMitreFilter, onIpFilter, redisInsights }) {
   const [logs, setLogs] = React.useState([])
   const [localRedisInsights, setLocalRedisInsights] = React.useState(redisInsights)
   const [view, setView] = React.useState('timeline')
@@ -299,7 +299,7 @@ function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
               {/* CORRELATED INTELLIGENCE */}
               <div style={{ marginTop: '28px', paddingTop: '18px', borderTop: '0.5px solid var(--border)' }}>
                 <div style={{ fontFamily: 'var(--font-mono), monospace', fontSize: '9px', color: 'rgba(255,255,255,0.5)', letterSpacing: '0.18em', marginBottom: '20px' }}>
-                  CORRELATED INTELLIGENCE (24H REDIS MEMORY) — CLICK TO FILTER HISTORY
+                  CORRELATED INTELLIGENCE (24H REDIS MEMORY) — CLICK IP TO FILTER
                 </div>
                 {localRedisInsights?.indicators?.length > 0 ? (
                   <div style={{ display: 'flex', flexDirection: 'column' }}>
@@ -317,27 +317,28 @@ function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
                       return (
                         <div
                           key={i}
+                          onClick={isIp ? () => { onIpFilter?.(label); onClose?.() } : undefined}
                           style={{
                             padding: '8px 10px',
                             marginBottom: '5px',
                             background: ind.count >= 3 ? 'rgba(229,115,115,0.06)' : 'var(--bg-card)',
                             border: '0.5px solid var(--border-bright)',
                             borderRadius: '3px',
-                            cursor: 'pointer',
+                            cursor: isIp ? 'pointer' : 'default',
                             transition: 'background 0.15s, border-color 0.15s',
                           }}
-                          onMouseEnter={e => {
+                          onMouseEnter={isIp ? e => {
                             e.currentTarget.style.background = ind.count >= 3
                               ? 'rgba(229,115,115,0.12)'
                               : 'rgba(255,255,255,0.04)'
                             e.currentTarget.style.borderColor = labelColor
-                          }}
-                          onMouseLeave={e => {
+                          } : undefined}
+                          onMouseLeave={isIp ? e => {
                             e.currentTarget.style.background = ind.count >= 3
                               ? 'rgba(229,115,115,0.06)'
                               : 'var(--bg-card)'
                             e.currentTarget.style.borderColor = 'var(--border-bright)'
-                          }}
+                          } : undefined}
                         >
                           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '3px' }}>
                             <span style={{
@@ -453,7 +454,7 @@ function MitrePanel({ onClose, onMitreFilter, redisInsights }) {
 }
 
 // ── HEADER COMPONENT ──────────────────────────────────────────────────────────
-export default function Header({ activeId, result, onReset, onMitreFilter, redisInsights, onClearHistory }) {
+export default function Header({ activeId, result, onReset, onMitreFilter, onIpFilter, redisInsights, onClearHistory }) {
   const [auditOpen,  setAuditOpen]  = useState(false)
   const [mitreOpen,  setMitreOpen]  = useState(false)
   const [aboutOpen,  setAboutOpen]  = useState(false)
@@ -652,7 +653,7 @@ export default function Header({ activeId, result, onReset, onMitreFilter, redis
       </header>
 
       {auditOpen && <AuditLog onClose={() => setAuditOpen(false)} onMitreFilter={onMitreFilter} onClearHistory={onClearHistory} />}
-      {mitreOpen && <MitrePanel onClose={() => setMitreOpen(false)} onMitreFilter={onMitreFilter} redisInsights={redisInsights} />}
+      {mitreOpen && <MitrePanel onClose={() => setMitreOpen(false)} onMitreFilter={onMitreFilter} onIpFilter={onIpFilter} redisInsights={redisInsights} />}
       {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)} />}
     </>
   )

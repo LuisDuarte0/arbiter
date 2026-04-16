@@ -276,7 +276,7 @@ export default function Home() {
 
   return (
     <div className="arb-layout">
-      <Header activeId={activeId} result={result} onReset={handleReset} onMitreFilter={setMitreFilter} redisInsights={redisInsights} onClearHistory={handleClearHistory} sessionId={sessionId} />
+      <Header activeId={activeId} result={result} onReset={handleReset} onMitreFilter={setMitreFilter} onIpFilter={handleIpFilter} redisInsights={redisInsights} onClearHistory={handleClearHistory} sessionId={sessionId} />
       <main className={mainClass}>
         <AlertQueue
   history={history}

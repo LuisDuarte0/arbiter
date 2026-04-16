@@ -917,6 +917,7 @@ function getMitreTactic(mitreId) {
     'T1218': 'Defense Evasion', 'T1218.005': 'Defense Evasion', 'T1218.011': 'Defense Evasion',
     'T1027': 'Defense Evasion', 'T1027.010': 'Defense Evasion',
     'T1105': 'Command and Control',
+    'T1071': 'Command and Control', 'T1071.001': 'Command and Control',
     'T1021': 'Lateral Movement', 'T1021.002': 'Lateral Movement', 'T1021.006': 'Lateral Movement',
     'T1569': 'Execution', 'T1569.002': 'Execution',
     'T1548': 'Privilege Escalation', 'T1548.002': 'Privilege Escalation',
@@ -2070,7 +2071,7 @@ export async function POST(request) {
             if (fb) return getMitreName(fb.id) ?? finalVerdict.classification
             return finalVerdict.classification
           })(),
-          mitre_tactic: getMitreTactic(finalVerdict.deterministicMitre) ?? 'Unknown',
+          mitre_tactic: getMitreTactic(finalVerdict.deterministicMitre) ?? getClassificationMitre(finalVerdict.classification)?.tactic ?? 'Unknown',
           recommendations:           deterministicRecommendations,
           recommendation_provenance: deterministicProvenance,
           verdict_class:             finalVerdict.verdictClass,
